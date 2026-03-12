@@ -1,0 +1,19 @@
+# CSV outputs — data files, not code
+*.csv
+
+# Claude project instructions — local only
+CLAUDE.md
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Local config — contains personal User-Agent details, never commit
+config.py
+
+# Environment / secrets — never commit these
+.env
+*.token
