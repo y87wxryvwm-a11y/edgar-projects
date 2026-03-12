@@ -6,9 +6,16 @@ User-Agent is loaded from config.py (gitignored). See config.example.py.
 import time
 import threading
 import requests
+import requests.packages.urllib3
 import pandas as pd
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Suppress SSL warnings that arise when verify=False is used (e.g. on networks
+# with a self-signed corporate proxy certificate).
+requests.packages.urllib3.disable_warnings(
+    requests.packages.urllib3.exceptions.InsecureRequestWarning
+)
 
 try:
     from config import USER_AGENT
@@ -45,7 +52,7 @@ def get(url: str, retries: int = 3, **kwargs) -> requests.Response:
     }
     for attempt in range(retries):
         _rate_limiter.acquire()
-        resp = requests.get(url, headers=headers, **kwargs)
+        resp = requests.get(url, headers=headers, verify=False, **kwargs)
         if resp.status_code == 429:
             wait = 2 ** attempt
             print(f"429 — waiting {wait}s...")
