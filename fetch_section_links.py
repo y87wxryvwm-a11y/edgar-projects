@@ -104,7 +104,7 @@ def find_item9_link(html_url: str) -> tuple[str, str]:
       'found'      — fragment located; item9_url is the full clickable link
       'NOT FOUND'  — fragment not identified; caller applies fallback url
       'NO_URL'     — html_url is blank
-      'ERROR: …'   — network or parse failure
+      'ERROR'      — network or parse failure (retried once; html_url used as fallback)
     """
     if not html_url or str(html_url).strip() in ('', 'nan'):
         return '', 'NO_URL'
@@ -130,8 +130,8 @@ def find_item9_link(html_url: str) -> tuple[str, str]:
 
         return '', 'NOT FOUND'
 
-    except Exception as e:
-        return '', f'ERROR: {e}'
+    except Exception:
+        return '', 'ERROR'
 
 
 def main():
@@ -186,6 +186,19 @@ def main():
     if pbar:
         pbar.close()
 
+    # --- Retry pass for errors ---
+    error_indices = [i for i, s in enumerate(statuses) if s == 'ERROR']
+    if error_indices:
+        print(f"\nRetrying {len(error_indices)} errored row(s)...")
+        for i in error_indices:
+            time.sleep(_DELAY * 2)   # longer pause before retry
+            html_url = str(df.iloc[i].get('html_url', ''))
+            url, status = find_item9_link(html_url)
+            if status == 'NOT FOUND' or status == 'ERROR':
+                url = html_url       # fall back to html_url regardless of outcome
+            statuses[i]   = status
+            item9_urls[i] = url
+
     df['item9_url']    = item9_urls
     df['item9_status'] = statuses
 
@@ -194,7 +207,7 @@ def main():
     found     = statuses.count('found')
     not_found = statuses.count('NOT FOUND')
     skipped   = statuses.count('N/A')
-    errors    = sum(1 for s in statuses if s.startswith('ERROR'))
+    errors    = statuses.count('ERROR')
     searched  = found + not_found
     hit_rate  = f"{100 * found / searched:.1f}%" if searched else "n/a"
 
