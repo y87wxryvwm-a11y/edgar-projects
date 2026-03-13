@@ -114,16 +114,13 @@ def find_item9_link(html_url: str) -> tuple[str, str]:
         soup    = BeautifulSoup(content, 'html.parser')
         anchors = soup.find_all('a', href=True)
 
-        if not anchors:
-            return '', 'NOT FOUND'
-
         result = _search_anchors(soup, html_url)
         if result:
             return result
 
         # --- Adaptive deep pass ---
-        # If very few anchors were found the TOC is likely beyond the first fetch
-        # window (Lufax pattern). Re-fetch at a higher limit and try again.
+        # Triggered when anchors are absent or very sparse after the first fetch —
+        # both signal that the TOC is likely beyond the 1MB window.
         if len(anchors) <= ANCHOR_THRESHOLD:
             content = _stream(html_url, FETCH_BYTES_DEEP)
             soup    = BeautifulSoup(content, 'html.parser')
