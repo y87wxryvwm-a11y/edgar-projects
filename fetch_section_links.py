@@ -9,9 +9,13 @@ Appends an item9_url column and a status column to the CSV and saves the result.
 Approach:
   - Streams the first 1MB of each filing's HTML — enough to cover the TOC
     for virtually all modern 20-F filers without downloading the full document
-  - If no <a> tags are found in 1MB the filing is image-based / legacy (LEGACY)
   - Matches by: "Item 9" in link text, "Item 9" in href, or "Offer and Listing"
     in link text — covers both explicitly labelled TOCs and title-only templates
+
+Fallback behaviour for non-found rows:
+  - 20-F / 20-F/A with status NOT FOUND → item9_url set to html_url (filing root)
+  - 40-F rows → item9_url set to filing_url (index page); no HTML search attempted
+  - All other form types → item9_url left blank; status N/A
 """
 
 import os
@@ -98,10 +102,7 @@ def find_item9_link(html_url: str) -> tuple[str, str]:
 
     status values:
       'found'      — fragment located; item9_url is the full clickable link
-      'NOT FOUND'  — anchors present but no Item 9 match in the fetched portion
-      'CUSTOM_TOC' — anchors present but none use SEC item numbering (e.g. custom
-                     annual report format); Item 9 is not identifiable from the TOC
-      'LEGACY'     — no <a> tags found; image-based or non-navigable filing
+      'NOT FOUND'  — fragment not identified; caller applies fallback url
       'NO_URL'     — html_url is blank
       'ERROR: …'   — network or parse failure
     """
@@ -114,7 +115,7 @@ def find_item9_link(html_url: str) -> tuple[str, str]:
         anchors = soup.find_all('a', href=True)
 
         if not anchors:
-            return '', 'LEGACY'
+            return '', 'NOT FOUND'
 
         result = _search_anchors(soup, html_url)
         if result:
@@ -129,24 +130,6 @@ def find_item9_link(html_url: str) -> tuple[str, str]:
             result  = _search_anchors(soup, html_url)
             if result:
                 return result
-            # Re-check anchor count after deep fetch
-            anchors = soup.find_all('a', href=True)
-            if not anchors:
-                return '', 'LEGACY'
-
-        # Anchors exist but no item 9 found — distinguish CUSTOM_TOC from NOT FOUND.
-        # CUSTOM_TOC: fragment anchors are present but none contain any SEC item
-        # label (no "item" keyword anywhere in text/href of fragment links), which
-        # suggests a custom annual report TOC with proprietary section titles.
-        frag_anchors = [a for a in soup.find_all('a', href=True)
-                        if a.get('href', '').startswith('#')]
-        has_any_item_label = any(
-            re.search(r'\bitem\b', a.get_text(strip=True), re.IGNORECASE) or
-            re.search(r'\bitem\b', a.get('href', ''), re.IGNORECASE)
-            for a in frag_anchors
-        )
-        if frag_anchors and not has_any_item_label:
-            return '', 'CUSTOM_TOC'
 
         return '', 'NOT FOUND'
 
@@ -175,22 +158,33 @@ def main():
     except ImportError:
         pbar = None
 
-    RELEVANT_FORMS = {'20-F', '20-F/A'}
+    SEARCH_FORMS  = {'20-F', '20-F/A'}   # run full Item 9 search
+    FALLBACK_FORMS = {'40-F'}             # skip search; use filing_url as item9_url
 
     for _, row in df.iterrows():
-        form_type = str(row.get('Form Type', '')).strip()
-        if form_type not in RELEVANT_FORMS:
+        form_type  = str(row.get('Form Type', '')).strip()
+        html_url   = str(row.get('html_url', ''))
+        filing_url = str(row.get('filing_url', ''))
+
+        if form_type in FALLBACK_FORMS:
+            # 40-F: point directly to the filing index page
+            item9_urls.append(filing_url)
+            statuses.append('N/A')
+
+        elif form_type in SEARCH_FORMS:
+            url, status = find_item9_link(html_url)
+            if status == 'NOT FOUND':
+                url = html_url      # fall back to filing root when fragment not found
+            item9_urls.append(url)
+            statuses.append(status)
+            time.sleep(_DELAY)
+
+        else:
             item9_urls.append('')
             statuses.append('N/A')
-            if pbar:
-                pbar.update(1)
-            continue
-        url, status = find_item9_link(str(row.get('html_url', '')))
-        item9_urls.append(url)
-        statuses.append(status)
+
         if pbar:
             pbar.update(1)
-        time.sleep(_DELAY)
 
     if pbar:
         pbar.close()
@@ -200,17 +194,15 @@ def main():
 
     df.to_csv(out_path, index=False)
 
-    found      = statuses.count('found')
-    not_found  = statuses.count('NOT FOUND')
-    custom_toc = statuses.count('CUSTOM_TOC')
-    legacy     = statuses.count('LEGACY')
-    skipped    = statuses.count('N/A')
-    errors     = sum(1 for s in statuses if s.startswith('ERROR'))
-    navigable  = found + not_found + custom_toc
-    hit_rate   = f"{100 * found / navigable:.1f}%" if navigable else "n/a"
+    found     = statuses.count('found')
+    not_found = statuses.count('NOT FOUND')
+    skipped   = statuses.count('N/A')
+    errors    = sum(1 for s in statuses if s.startswith('ERROR'))
+    searched  = found + not_found
+    hit_rate  = f"{100 * found / searched:.1f}%" if searched else "n/a"
 
-    print(f"\nResults: {found} found / {not_found} not found / {custom_toc} custom_toc / {legacy} legacy / {skipped} skipped (non-20-F) / {errors} errors")
-    print(f"Hit rate (excl. legacy + custom_toc): {found}/{navigable} = {hit_rate}")
+    print(f"\nResults: {found} found / {not_found} not found (fallback to html_url) / {skipped} skipped / {errors} errors")
+    print(f"Hit rate: {found}/{searched} = {hit_rate}")
     print(f"Saved → {out_path}")
     return df
 
