@@ -175,7 +175,16 @@ def main():
     except ImportError:
         pbar = None
 
+    RELEVANT_FORMS = {'20-F', '20-F/A'}
+
     for _, row in df.iterrows():
+        form_type = str(row.get('Form Type', '')).strip()
+        if form_type not in RELEVANT_FORMS:
+            item9_urls.append('')
+            statuses.append('N/A')
+            if pbar:
+                pbar.update(1)
+            continue
         url, status = find_item9_link(str(row.get('html_url', '')))
         item9_urls.append(url)
         statuses.append(status)
@@ -195,11 +204,12 @@ def main():
     not_found  = statuses.count('NOT FOUND')
     custom_toc = statuses.count('CUSTOM_TOC')
     legacy     = statuses.count('LEGACY')
+    skipped    = statuses.count('N/A')
     errors     = sum(1 for s in statuses if s.startswith('ERROR'))
     navigable  = found + not_found + custom_toc
     hit_rate   = f"{100 * found / navigable:.1f}%" if navigable else "n/a"
 
-    print(f"\nResults: {found} found / {not_found} not found / {custom_toc} custom_toc / {legacy} legacy / {errors} errors")
+    print(f"\nResults: {found} found / {not_found} not found / {custom_toc} custom_toc / {legacy} legacy / {skipped} skipped (non-20-F) / {errors} errors")
     print(f"Hit rate (excl. legacy + custom_toc): {found}/{navigable} = {hit_rate}")
     print(f"Saved → {out_path}")
     return df
