@@ -2,6 +2,7 @@
 edgar_utils.py — Utilities for SEC EDGAR data retrieval.
 User-Agent is loaded from config.py (gitignored). See config.example.py.
 Last verified: 2026-03-22
+Git workflow test: confirmed working
 """
 
 import time
