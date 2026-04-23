@@ -20,9 +20,13 @@ v2_path = os.path.join(save_directory, v2_filename)
 KEY = ["cusip_6", "Meeting_Date"]
 
 
+FILTER_YEAR = 2025
+
+
 def load(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, dtype={"cusip_6": str})
     df["Meeting_Date"] = pd.to_datetime(df["Meeting_Date"], errors="coerce")
+    df = df[df["Meeting_Date"].dt.year == FILTER_YEAR].copy()
     return df
 
 
@@ -35,8 +39,8 @@ def section(title: str) -> None:
 
 def basic_info(v1: pd.DataFrame, v2: pd.DataFrame) -> None:
     section("BASIC INFO")
-    print(f"v1 file: {v1_filename}")
-    print(f"v2 file: {v2_filename}")
+    print(f"v1 file: {v1_filename}  (filtered to Meeting_Date year == {FILTER_YEAR})")
+    print(f"v2 file: {v2_filename}  (filtered to Meeting_Date year == {FILTER_YEAR})")
     print(f"v1 rows:     {len(v1):>8,}     v1 cols: {v1.shape[1]}")
     print(f"v2 rows:     {len(v2):>8,}     v2 cols: {v2.shape[1]}")
     print(f"row delta:   {len(v2) - len(v1):>+8,}")
