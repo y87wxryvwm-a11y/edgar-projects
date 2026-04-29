@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import html
 import os
 import re
 from dataclasses import dataclass
@@ -50,6 +51,10 @@ SECTION_RE = re.compile(
 NAME_RE = re.compile(r"COMPANY CONFORMED NAME:\s*(.+?)\s*$", re.MULTILINE)
 CIK_RE = re.compile(r"CENTRAL INDEX KEY:\s*(\d+)\s*$", re.MULTILINE)
 DATE_RE = re.compile(r"FILED AS OF DATE:\s*(\d{8})\s*$", re.MULTILINE)
+# <PAPER> appears as a literal SGML tag in raw .txt content and as the
+# HTML-encoded "&lt;PAPER&gt;" inside the index-headers.html wrapper. Check
+# against the raw text before strip_html removes it.
+PAPER_RE = re.compile(r"<PAPER>|&lt;PAPER&gt;", re.IGNORECASE)
 
 
 @dataclass
@@ -151,10 +156,15 @@ def fetch_header(pool: urllib3.PoolManager, ref: FilingRef) -> str:
 
 
 def strip_html(s: str) -> str:
-    return re.sub(r"<[^>]+>", "", s)
+    # html.unescape turns "&amp;" -> "&" so company names with ampersands
+    # (or other entities) come out clean regardless of source.
+    return html.unescape(re.sub(r"<[^>]+>", "", s))
 
 
-def parse_header(text: str) -> tuple[str, list[tuple[str, str]], list[tuple[str, str]]]:
+def parse_header(
+    text: str,
+) -> tuple[str, bool, list[tuple[str, str]], list[tuple[str, str]]]:
+    is_paper = bool(PAPER_RE.search(text))  # raw text — strip_html removes <PAPER>
     plain = strip_html(text)
     date_match = DATE_RE.search(plain)
     if date_match:
@@ -180,7 +190,19 @@ def parse_header(text: str) -> tuple[str, list[tuple[str, str]], list[tuple[str,
             subjects.append(entry)
         else:
             filers.append(entry)
-    return date_iso, subjects, filers
+    return date_iso, is_paper, subjects, filers
+
+
+def filing_url(ref: FilingRef, is_paper: bool) -> str:
+    no_dashes = ref.accession.replace("-", "")
+    if is_paper:
+        # Paper filings predate the per-accession subfolder layout — the
+        # directory page doesn't exist. Link to the raw submission instead.
+        return f"https://www.sec.gov/Archives/edgar/data/{ref.cik}/{ref.accession}.txt"
+    return (
+        f"https://www.sec.gov/Archives/edgar/data/{ref.cik}/"
+        f"{no_dashes}/{ref.accession}-index.htm"
+    )
 
 
 def discover_refs(pool: urllib3.PoolManager) -> list[tuple[int, FilingRef]]:
@@ -226,7 +248,7 @@ def main() -> None:
     for i, (idx_year, ref) in enumerate(unique, 1):
         try:
             text = fetch_header(pool, ref)
-            date_iso, subjects, filers = parse_header(text)
+            date_iso, is_paper, subjects, filers = parse_header(text)
             year = date_iso[:4] if date_iso else str(idx_year)
             rows.append(
                 [
@@ -237,6 +259,8 @@ def main() -> None:
                     "; ".join(c for _, c in subjects),
                     "; ".join(n for n, _ in filers),
                     "; ".join(c for _, c in filers),
+                    1 if is_paper else 0,
+                    filing_url(ref, is_paper),
                 ]
             )
         except Exception as e:  # noqa: BLE001
@@ -258,6 +282,8 @@ def main() -> None:
                 "subject_cik",
                 "filer_company_name",
                 "filer_cik",
+                "is_paper",
+                "filing_url",
             ]
         )
         w.writerows(rows)
