@@ -17,6 +17,7 @@ import datetime as dt
 import html
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -242,31 +243,50 @@ def main() -> None:
         unique.append((year, ref))
     print(f"\nTotal unique filings: {len(unique)}\n")
 
+    def process_one(idx_year: int, ref: FilingRef) -> list[str]:
+        text = fetch_header(pool, ref)
+        date_iso, is_paper, subjects, filers = parse_header(text)
+        year = date_iso[:4] if date_iso else str(idx_year)
+        return [
+            ref.accession,
+            year,
+            date_iso,
+            "; ".join(n for n, _ in subjects),
+            "; ".join(c for _, c in subjects),
+            "; ".join(n for n, _ in filers),
+            "; ".join(c for _, c in filers),
+            1 if is_paper else 0,
+            filing_url(ref, is_paper),
+        ]
+
     print("Fetching SGML headers...")
     rows: list[list[str]] = []
-    failures: list[tuple[str, str]] = []
-    for i, (idx_year, ref) in enumerate(unique, 1):
-        try:
-            text = fetch_header(pool, ref)
-            date_iso, is_paper, subjects, filers = parse_header(text)
-            year = date_iso[:4] if date_iso else str(idx_year)
-            rows.append(
-                [
-                    ref.accession,
-                    year,
-                    date_iso,
-                    "; ".join(n for n, _ in subjects),
-                    "; ".join(c for _, c in subjects),
-                    "; ".join(n for n, _ in filers),
-                    "; ".join(c for _, c in filers),
-                    1 if is_paper else 0,
-                    filing_url(ref, is_paper),
-                ]
+    pending: list[tuple[int, FilingRef]] = list(unique)
+    last_errors: dict[str, str] = {}
+    # First pass: fast, no sleeps. Then retry passes with growing backoff so
+    # any transient SEC throttling/timeouts get a second (and third) chance.
+    retry_delays = [0.0, 2.0, 5.0, 15.0, 30.0]
+    for attempt, sleep_between in enumerate(retry_delays):
+        if not pending:
+            break
+        if attempt > 0:
+            print(
+                f"\nRetry pass {attempt}/{len(retry_delays) - 1}: "
+                f"{len(pending)} filings, sleeping {sleep_between}s between requests..."
             )
-        except Exception as e:  # noqa: BLE001
-            failures.append((ref.accession, str(e)))
-        if i % 100 == 0:
-            print(f"  processed {i}/{len(unique)}")
+        next_pending: list[tuple[int, FilingRef]] = []
+        for i, (idx_year, ref) in enumerate(pending, 1):
+            try:
+                rows.append(process_one(idx_year, ref))
+                last_errors.pop(ref.accession, None)
+            except Exception as e:  # noqa: BLE001
+                last_errors[ref.accession] = str(e)
+                next_pending.append((idx_year, ref))
+            if attempt == 0 and i % 100 == 0:
+                print(f"  processed {i}/{len(pending)}")
+            if sleep_between:
+                time.sleep(sleep_between)
+        pending = next_pending
 
     rows.sort(key=lambda r: (r[1], r[2]))
 
@@ -289,10 +309,16 @@ def main() -> None:
         w.writerows(rows)
 
     print(f"\nWrote {len(rows)} rows to {OUTPUT_CSV}")
-    if failures:
-        print(f"{len(failures)} failures:")
-        for acc, err in failures[:10]:
-            print(f"  {acc}: {err}")
+    if pending:
+        print(
+            f"\nERROR: {len(pending)} filings could not be fetched after "
+            f"{len(retry_delays) - 1} retries:"
+        )
+        for _, ref in pending:
+            err = last_errors.get(ref.accession, "unknown")
+            print(f"  {ref.accession} (cik {ref.cik}): {err}")
+            print(f"    {ref.headers_url}")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
