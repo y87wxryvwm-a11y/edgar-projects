@@ -9,8 +9,10 @@ import os
 import pandas as pd
 
 # ---- EDIT THIS --------------------------------------------------------------
-directory = "/path/to/your/folder"
+directory = r"C:\path\to\your\folder"
 # -----------------------------------------------------------------------------
+
+directory = directory.replace("\\", "/")
 
 pattern_xlsx = os.path.join(directory, "*.xlsx")
 pattern_xls = os.path.join(directory, "*.xls")
