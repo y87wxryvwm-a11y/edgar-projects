@@ -18,7 +18,11 @@ excel_files = sorted(glob.glob(os.path.join(directory, "*.xlsx")))
 
 frames = []
 for filepath in excel_files:
-    xl = pd.ExcelFile(filepath, engine="openpyxl")
+    try:
+        xl = pd.ExcelFile(filepath, engine="openpyxl")
+    except Exception as e:
+        print(f"  SKIPPED {os.path.basename(filepath)}: {e}")
+        continue
     for sheet_name in xl.sheet_names:
         df = xl.parse(sheet_name)
         df["_source_file"] = os.path.basename(filepath)
