@@ -14,13 +14,11 @@ directory = r"C:\path\to\your\folder"
 
 directory = directory.replace("\\", "/")
 
-pattern_xlsx = os.path.join(directory, "*.xlsx")
-pattern_xls = os.path.join(directory, "*.xls")
-excel_files = sorted(glob.glob(pattern_xlsx) + glob.glob(pattern_xls))
+excel_files = sorted(glob.glob(os.path.join(directory, "*.xlsx")))
 
 frames = []
 for filepath in excel_files:
-    xl = pd.ExcelFile(filepath)
+    xl = pd.ExcelFile(filepath, engine="openpyxl")
     for sheet_name in xl.sheet_names:
         df = xl.parse(sheet_name)
         df["_source_file"] = os.path.basename(filepath)
