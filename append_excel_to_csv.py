@@ -1,5 +1,5 @@
 """
-Append all Excel worksheets found in a folder into a single CSV file.
+Convert all xlsx files in a folder to CSV, then combine into one CSV file.
 Output is written to combined_output.csv inside the same folder.
 """
 
@@ -18,17 +18,19 @@ excel_files = sorted(glob.glob(os.path.join(directory, "*.xlsx")))
 
 frames = []
 for filepath in excel_files:
+    filename = os.path.basename(filepath)
     try:
-        xl = pd.ExcelFile(filepath, engine="openpyxl")
+        sheets = pd.read_excel(filepath, sheet_name=None, engine="openpyxl")
     except Exception as e:
-        print(f"  SKIPPED {os.path.basename(filepath)}: {e}")
+        print(f"  SKIPPED {filename}: {e}")
         continue
-    for sheet_name in xl.sheet_names:
-        df = xl.parse(sheet_name)
-        df["_source_file"] = os.path.basename(filepath)
+    for sheet_name, df in sheets.items():
+        df["_source_file"] = filename
         df["_source_sheet"] = sheet_name
+        csv_path = filepath.replace(".xlsx", f"_{sheet_name}.csv")
+        df.to_csv(csv_path, index=False)
         frames.append(df)
-    print(f"  Read {len(xl.sheet_names)} sheet(s) from {os.path.basename(filepath)}")
+    print(f"  Converted {len(sheets)} sheet(s) from {filename}")
 
 combined = pd.concat(frames, ignore_index=True)
 output_path = os.path.join(directory, "combined_output.csv")
