@@ -1,15 +1,13 @@
 """
-Profile a CSV dataset's shape into a single screenshottable PNG.
+Profile a CSV dataset's shape into a summary CSV.
 
-Run in Spyder. Produces <input_stem>__shape.png next to the input CSV.
+Run in Spyder. Produces <input_stem>__shape.csv next to the input CSV.
 """
 
 import os
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 # ---- EDIT THIS --------------------------------------------------------------
 directory = r"C:\path\to\folder"
@@ -19,7 +17,7 @@ filename  = "your_dataset.csv"
 directory = directory.replace("\\", "/")
 input_path  = os.path.join(directory, filename)
 stem        = os.path.splitext(filename)[0]
-output_path = os.path.join(directory, stem + "__shape.png")
+output_path = os.path.join(directory, stem + "__shape.csv")
 
 # ---- Load -------------------------------------------------------------------
 sampled_rows = None
@@ -119,71 +117,21 @@ for col in df.columns:
         examples = ""
 
     rows.append([
-        _truncate(col, 36),
+        col,
         dtype_str,
-        f"{n_missing:,}",
+        n_missing,
         pct_missing,
-        f"{n_unique:,}",
+        n_unique,
         min_v, max_v, mean_v, std_v, median_v,
-        _truncate(top_values, 60),
-        _truncate(examples, 50),
+        top_values,
+        examples,
     ])
 
-# ---- Render PNG -------------------------------------------------------------
-fig_w = 22.0
-fig_h = max(3.0, 1.6 + 0.32 * n_cols)
-fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-ax.axis("off")
-
-header_lines = [
-    f"File:  {filename}    ({file_size_mb:,.2f} MB)",
-    f"Shape: {n_rows:,} rows  x  {n_cols} columns",
-    f"Profiled: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-]
-if sampled_rows is not None:
-    header_lines.append(f"NOTE: profiled on first {sampled_rows:,} rows (full file too large to load).")
-if n_cols > 60:
-    header_lines.append(f"NOTE: {n_cols} columns — image is tall; zoom in when screenshotting.")
-
-fig.text(0.01, 0.995, "\n".join(header_lines),
-         ha="left", va="top", family="monospace", fontsize=11)
-
-# Approximate column widths (sum to ~1.0) tuned for content
-col_widths = [0.14, 0.06, 0.05, 0.05, 0.06,
-              0.07, 0.07, 0.06, 0.06, 0.06,
-              0.17, 0.15]
-
-table = ax.table(
-    cellText=rows,
-    colLabels=columns_header,
-    colWidths=col_widths,
-    loc="upper left",
-    cellLoc="left",
-    bbox=[0.0, 0.0, 1.0, 1.0 - (0.04 + 0.022 * len(header_lines))],
-)
-table.auto_set_font_size(False)
-table.set_fontsize(8.5)
-
-# Style header row
-for j in range(len(columns_header)):
-    cell = table[(0, j)]
-    cell.set_facecolor("#1f3a5f")
-    cell.set_text_props(color="white", weight="bold")
-
-# Zebra striping
-for i in range(1, len(rows) + 1):
-    for j in range(len(columns_header)):
-        if i % 2 == 0:
-            table[(i, j)].set_facecolor("#f2f4f8")
-
-footer = ("Legend: dtype shown as pandas dtype, 'datetime?' = auto-detected from strings.  "
-          "top_values = top-3 categorical values with counts.  "
-          "Cells truncated with '…'.")
-fig.text(0.01, 0.005, footer, ha="left", va="bottom",
-         family="monospace", fontsize=8, color="#444")
-
-fig.savefig(output_path, dpi=160, bbox_inches="tight")
-plt.close(fig)
+# ---- Write CSV --------------------------------------------------------------
+profile_df = pd.DataFrame(rows, columns=columns_header)
+profile_df.to_csv(output_path, index=False)
 
 print(f"Wrote {output_path}")
-print(f"Shape: {n_rows:,} rows x {n_cols} cols")
+print(f"Shape: {n_rows:,} rows x {n_cols} cols  |  {file_size_mb:,.2f} MB")
+if sampled_rows is not None:
+    print(f"NOTE: profiled on first {sampled_rows:,} rows (full file too large to load).")
