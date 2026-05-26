@@ -1,9 +1,14 @@
 """Compute proxy-proposal summary statistics defined in proxy/data_ask.txt.
 
-For each filter window (year == 2025; 2022 <= year <= 2025) produces the 17
-stats requested in data_ask.txt and writes them to proxy_summary_stats.csv
-with one row per (filter, stat) and the human-readable description alongside
-the value.
+Stats use the addressing scheme <concept>.<part><window>:
+  concept = 1..16  (proposal category / measure)
+  part    = .1, .2  (count then percent; or mean then median for concept 10)
+  window  = a (year == 2025), b (2022 <= year <= 2025)
+
+Output: proxy_summary_stats.csv -- one row per sub-stat with columns
+filter, stat_number (e.g. "2.1a"), description, value. Every window-a row is
+emitted before every window-b row, and concepts run 1..16 in numeric order so
+10.x..16.x follow 9.x (rather than string-sorting where "10" precedes "2").
 """
 
 import os
@@ -27,7 +32,11 @@ def pct(x, total):
     return round(100 * x / total, 2) if total else float("nan")
 
 
-def stats_block(sub, filter_label):
+def stat_rows(sub):
+    """Return [(base_label, description, value), ...] in numeric concept order.
+
+    base_label is the stat number without the window letter, e.g. "2.1".
+    """
     n = len(sub)
     voted = int((sub["myproposal_result"] == "1voted").sum())
     omitted = int((sub["myproposal_result"] == "2omitted").sum())
@@ -39,32 +48,65 @@ def stats_block(sub, filter_label):
     pt_nonnull = int(pt.notna().sum())
     individual = int((pt == "INDIVIDUAL").sum())
     institutional = pt_nonnull - individual
+    votes = sub["Votes For As % Votes Cast"]
+    votes_mean = round(float(votes.mean()), 2)
+    votes_median = float(votes.median())
+    passed = int((sub["Proxy Proposal Result"] == "Pass").sum())
+    unique_ciks = int(sub["cik"].nunique())
+    investment_industries = ["investment managers", "investment trusts/mutual funds"]
+    investment_ciks = int(
+        sub.loc[sub["Factset Industry Desc"].isin(investment_industries), "cik"].nunique()
+    )
+    sought = int((sub["mynoaction_sought"] == 1).sum())
+    granted = int((sub["mynoaction_granted"] == 1).sum())
+    granted_not_voted = int(
+        ((sub["mynoaction_granted"] == 1) & (sub["myproposal_result"] != "1voted")).sum()
+    )
 
     return [
-        (filter_label, 1, "Total count of proposals", n),
-        (filter_label, 2, "Count voted on (myproposal_result == 1voted)", voted),
-        (filter_label, 3, "Stat 2 as a percent of Stat 1", pct(voted, n)),
-        (filter_label, 4, "Count omitted following no-action letter (myproposal_result == 2omitted)", omitted),
-        (filter_label, 5, "Stat 4 as a percent of Stat 1", pct(omitted, n)),
-        (filter_label, 6, "Count withdrawn by proponent (myproposal_result == 3withdrawn)", withdrawn),
-        (filter_label, 7, "Stat 6 as a percent of Stat 1", pct(withdrawn, n)),
-        (filter_label, 8, "Count at S&P 500 meetings (Index Mtg SP50 == 1)", sp500),
-        (filter_label, 9, "Stat 8 as a percent of Stat 1", pct(sp500, n)),
-        (filter_label, 10, "Count related to corporate governance (Proxy Category == Corporate Governance)", cgov),
-        (filter_label, 11, "Stat 10 as a percent of Stat 1", pct(cgov, n)),
-        (filter_label, 12, "Count related to social/environmental issues (Proxy Category == Social/Environmental Issues)", social),
-        (filter_label, 13, "Stat 12 as a percent of Stat 1", pct(social, n)),
-        (filter_label, 14, "Count submitted by individual proponents (Proponent Type Code == INDIVIDUAL)", individual),
-        (filter_label, 15, "Stat 14 as a percent of non-missing Proponent Type Code rows", pct(individual, pt_nonnull)),
-        (filter_label, 16, "Count submitted by institutional proponents (Proponent Type Code not INDIVIDUAL and not missing)", institutional),
-        (filter_label, 17, "Stat 16 as a percent of non-missing Proponent Type Code rows", pct(institutional, pt_nonnull)),
+        ("1.1", "Total count of proposals", n),
+        ("2.1", "Voted on (myproposal_result == 1voted)", voted),
+        ("2.2", "Voted on, as % of total (stat 1.1)", pct(voted, n)),
+        ("3.1", "Omitted after no-action letter (myproposal_result == 2omitted)", omitted),
+        ("3.2", "Omitted, as % of total (stat 1.1)", pct(omitted, n)),
+        ("4.1", "Withdrawn by proponent (myproposal_result == 3withdrawn)", withdrawn),
+        ("4.2", "Withdrawn, as % of total (stat 1.1)", pct(withdrawn, n)),
+        ("5.1", "S&P 500 meetings (Index Mtg SP50 == 1)", sp500),
+        ("5.2", "S&P 500 meetings, as % of total (stat 1.1)", pct(sp500, n)),
+        ("6.1", "Corporate governance (Proxy Category == Corporate Governance)", cgov),
+        ("6.2", "Corporate governance, as % of total (stat 1.1)", pct(cgov, n)),
+        ("7.1", "Social/environmental (Proxy Category == Social/Environmental Issues)", social),
+        ("7.2", "Social/environmental, as % of total (stat 1.1)", pct(social, n)),
+        ("8.1", "Individual proponents (Proponent Type Code == INDIVIDUAL)", individual),
+        ("8.2", "Individual proponents, as % of non-missing Proponent Type Code", pct(individual, pt_nonnull)),
+        ("9.1", "Institutional proponents (Proponent Type Code not INDIVIDUAL and not missing)", institutional),
+        ("9.2", "Institutional proponents, as % of non-missing Proponent Type Code", pct(institutional, pt_nonnull)),
+        ("10.1", "Average of Votes For As % Votes Cast", votes_mean),
+        ("10.2", "Median of Votes For As % Votes Cast", votes_median),
+        ("11.1", "Proxy Proposal Result == Pass", passed),
+        ("11.2", "Pass, as % of total (stat 1.1)", pct(passed, n)),
+        ("12.1", "Count of unique cik values", unique_ciks),
+        ("13.1", "Count of unique cik values where Factset Industry Desc is 'investment managers' or 'investment trusts/mutual funds' (subset of stat 12.1)", investment_ciks),
+        ("14.1", "Count where mynoaction_sought == 1", sought),
+        ("14.2", "Stat 14.1 as % of total (stat 1.1)", pct(sought, n)),
+        ("15.1", "Count where mynoaction_granted == 1", granted),
+        ("15.2", "Stat 15.1 as % of stat 14.1 (no-action granted as % of sought)", pct(granted, sought)),
+        ("16.1", "Count where mynoaction_granted == 1 and myproposal_result != 1voted", granted_not_voted),
+        ("16.2", "Stat 16.1 as % of stat 15.1", pct(granted_not_voted, granted)),
     ]
 
 
-rows = []
-rows.extend(stats_block(df.loc[df["year"] == 2025], "year_2025"))
-rows.extend(stats_block(df.loc[df["year"].between(2022, 2025)], "year_2022_2025"))
+# Window-a rows are emitted before window-b rows so the two blocks stay grouped.
+windows = [
+    ("a", "year_2025", df.loc[df["year"] == 2025]),
+    ("b", "year_2022_2025", df.loc[df["year"].between(2022, 2025)]),
+]
 
-out = pd.DataFrame(rows, columns=["filter", "stat_num", "description", "value"])
+rows = []
+for letter, label, sub in windows:
+    for base, desc, value in stat_rows(sub):
+        rows.append((label, f"{base}{letter}", desc, value))
+
+out = pd.DataFrame(rows, columns=["filter", "stat_number", "description", "value"])
 out.to_csv(output_path, index=False)
-print(f"Wrote {len(out)} stats to {output_path}")
+print(f"Wrote {len(out)} stat rows to {output_path}")
