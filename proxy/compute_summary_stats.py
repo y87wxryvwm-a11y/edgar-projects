@@ -53,10 +53,11 @@ def stat_rows(sub):
     votes_median = float(votes.median())
     passed = int((sub["Proxy Proposal Result"] == "Pass").sum())
     unique_ciks = int(sub["cik"].nunique())
+    # Match industry names case-insensitively: the real data uses title case
+    # ("Investment Managers") while this list is lowercase, so normalize first.
+    desc_norm = sub["Factset Industry Desc"].str.strip().str.lower()
     investment_industries = ["investment managers", "investment trusts/mutual funds"]
-    investment_ciks = int(
-        sub.loc[sub["Factset Industry Desc"].isin(investment_industries), "cik"].nunique()
-    )
+    investment_ciks = int(sub.loc[desc_norm.isin(investment_industries), "cik"].nunique())
     sought = int((sub["mynoaction_sought"] == 1).sum())
     granted = int((sub["mynoaction_granted"] == 1).sum())
     granted_not_voted = int(
