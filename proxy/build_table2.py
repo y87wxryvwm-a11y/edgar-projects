@@ -1,7 +1,10 @@
 """Build Table 2 -- Shareholder proposal voting support.
 
 For each proposal group (all proposals, then by topic, then by proponent type)
-reports three voting-support measures, every cell an integer percentage:
+reports three voting-support measures, every cell an integer percentage. All
+three are computed over proposals that actually went to a vote
+(myproposal_result == 1voted); omitted/withdrawn rows carry a spurious 0 in the
+source data and are excluded.
   - Votes cast in favor (average): mean of Votes For As % Votes Cast
   - Votes cast in favor (median): median of Votes For As % Votes Cast
   - Proposals with majority support: share with Votes For As % Votes Cast > 50
@@ -46,7 +49,10 @@ def pctfmt(x):
 
 
 def metrics(sub):
-    v = sub[VOTES]
+    # Voting-support measures apply only to proposals that went to a vote.
+    # Non-voted rows (omitted/withdrawn) carry a spurious 0 in the source data,
+    # so restrict to myproposal_result == 1voted before averaging/thresholding.
+    v = sub.loc[sub["myproposal_result"] == "1voted", VOTES]
     avg = v.mean()
     median = v.median()
     majority = 100 * (v > majority_threshold).mean()

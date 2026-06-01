@@ -48,7 +48,10 @@ def stat_rows(sub):
     pt_nonnull = int(pt.notna().sum())
     individual = int((pt == "INDIVIDUAL").sum())
     institutional = pt_nonnull - individual
-    votes = sub["Votes For As % Votes Cast"]
+    # Votes For As % Votes Cast is only meaningful for proposals that actually
+    # went to a vote. Non-voted rows (omitted/withdrawn) carry a spurious 0 in the
+    # source data, so restrict the mean/median to myproposal_result == 1voted.
+    votes = sub.loc[sub["myproposal_result"] == "1voted", "Votes For As % Votes Cast"]
     votes_mean = round(float(votes.mean()), 2)
     votes_median = float(votes.median())
     passed = int((sub["Proxy Proposal Result"] == "Pass").sum())
