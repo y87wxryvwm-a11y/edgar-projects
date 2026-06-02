@@ -10,12 +10,22 @@ import numpy as np
 import pandas as pd
 
 # ---- EDIT THIS --------------------------------------------------------------
-directory = r"/Users/avilae/claude-code/projects/edgar-projects/proxy"
 seed = 42
 output_filename = "synthetic_proxy.csv"
 # -----------------------------------------------------------------------------
 
-directory = directory.replace("\\", "/")
+# directory is read from config.py (git-ignored) so each machine keeps its own
+# data-folder path and a `git pull` never overwrites it. Copy config.example.py
+# to config.py in this folder and set DATA_DIR.
+try:
+    from config import DATA_DIR
+except ImportError:
+    raise RuntimeError(
+        "config.py not found. Copy config.example.py to config.py in this "
+        "folder and set DATA_DIR to your proxy data folder."
+    )
+
+directory = DATA_DIR.replace("\\", "/")
 output_path = os.path.join(directory, output_filename)
 
 N = 8461
