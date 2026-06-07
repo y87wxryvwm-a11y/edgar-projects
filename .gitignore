@@ -1,5 +1,6 @@
-# CSV outputs — data files, not code
+# Data files, not code (CSV/Excel outputs and inputs)
 *.csv
+*.xlsx
 
 # Claude project instructions — local only
 CLAUDE.md
@@ -7,6 +8,14 @@ CLAUDE.md
 # Python cache
 __pycache__/
 *.pyc
+
+# Virtual environments and local EDGAR caches (large, machine-specific)
+.venv/
+**/.cache/
+
+# Local data output folders (DATA_DIR may point inside the repo on some machines);
+# only code is committed, never fetched filings / evidence / results
+shares-outstanding/data/
 
 # macOS
 .DS_Store
