@@ -34,7 +34,9 @@ Design notes on reliability (the three questions that matter):
 
 from __future__ import annotations
 
+import gzip
 import io
+import json
 import os
 import random
 import re
@@ -63,6 +65,57 @@ DEFAULT_MIX = {"10-K": 0.50, "20-F": 0.40, "40-F": 0.10}
 REQUEST_INTERVAL_SEC = 0.15  # ~6-7 req/s, under SEC's 10 req/s cap
 PLAUSIBLE_MIN_SHARES = 1_000          # subsidiaries can have very few shares
 PLAUSIBLE_MAX_SHARES = 5_000_000_000_000  # 5 trillion ceiling
+
+# On-disk caches so the iterate-until-correct loop is cheap: the primary document
+# (keyed by accession) and the XBRL dei fact (keyed by CIK) are fetched from SEC
+# exactly once. After a parser change, re-running the extractor reads everything
+# from these caches (no network), so only the parsing logic re-runs. Both live
+# under .cache/ (git-ignored). Behaviour with a warm cache is byte-identical to a
+# cold fetch — the cache stores exactly what the network call returned.
+_CACHE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
+DOC_CACHE_DIR = os.path.join(_CACHE_ROOT, "docs")
+XBRL_CACHE_DIR = os.path.join(_CACHE_ROOT, "xbrl")
+
+
+def _read_doc_cache(accession):
+    p = os.path.join(DOC_CACHE_DIR, f"{accession}.json.gz")
+    if not os.path.exists(p):
+        return None
+    try:
+        with gzip.open(p, "rt", encoding="utf-8") as f:
+            d = json.load(f)
+        return d["doc_type"], d["raw"], d["period"]
+    except Exception:
+        return None
+
+
+def _write_doc_cache(accession, doc_type, raw, period):
+    os.makedirs(DOC_CACHE_DIR, exist_ok=True)
+    p = os.path.join(DOC_CACHE_DIR, f"{accession}.json.gz")
+    tmp = p + ".tmp"
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:
+        json.dump({"doc_type": doc_type, "raw": raw, "period": period}, f)
+    os.replace(tmp, p)
+
+
+def _read_xbrl_cache(cik):
+    p = os.path.join(XBRL_CACHE_DIR, f"CIK{str(int(cik)).zfill(10)}.json")
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _write_xbrl_cache(cik, vals):
+    os.makedirs(XBRL_CACHE_DIR, exist_ok=True)
+    p = os.path.join(XBRL_CACHE_DIR, f"CIK{str(int(cik)).zfill(10)}.json")
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(vals, f)
+    os.replace(tmp, p)
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +266,22 @@ def stratified_sample(filings, n, mix=DEFAULT_MIX, seed=20260607):
 # ---------------------------------------------------------------------------
 # Primary document download + text reduction
 # ---------------------------------------------------------------------------
-def fetch_primary_document(session, filing, cap_bytes=6_000_000):
+def fetch_primary_document(session, filing, cap_bytes=6_000_000, use_cache=True):
+    """Return (doc_type, raw_html, period) for the filing's primary document,
+    reading from the on-disk cache when present so re-runs don't re-download.
+    The network path is in `_fetch_primary_document_network`; the cache stores
+    exactly its return value, so a warm read is identical to a cold fetch."""
+    if use_cache:
+        cached = _read_doc_cache(filing.accession)
+        if cached is not None:
+            return cached
+    result = _fetch_primary_document_network(session, filing, cap_bytes)
+    if use_cache and result[1]:  # only cache a non-empty primary document
+        _write_doc_cache(filing.accession, *result)
+    return result
+
+
+def _fetch_primary_document_network(session, filing, cap_bytes=6_000_000):
     """Stream the full submission .txt and return (doc_type, raw_html, period) for
     the FIRST <DOCUMENT> whose <TYPE> matches the filing's form. Streaming lets us
     stop after the primary document so we don't pull megabytes of XBRL/exhibits.
@@ -656,16 +724,23 @@ def _dedupe(entries):
 # ---------------------------------------------------------------------------
 # XBRL cross-check (independent ground truth from SEC's structured data)
 # ---------------------------------------------------------------------------
-def fetch_xbrl_shares(session, cik):
+def fetch_xbrl_shares(session, cik, use_cache=True):
     """dei:EntityCommonStockSharesOutstanding from the companyconcept API.
     Present for most domestic 10-K filers; often absent / per-class for
-    multi-class & foreign filers (then we rely on prose + the validator)."""
+    multi-class & foreign filers (then we rely on prose + the validator).
+    Cached by CIK (a 404/empty result is cached too, so we don't re-hit)."""
+    if use_cache:
+        cached = _read_xbrl_cache(cik)
+        if cached is not None:
+            return cached
     cik10 = str(int(cik)).zfill(10)
     url = (f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik10}/dei/"
            f"EntityCommonStockSharesOutstanding.json")
     try:
         r = session.get(url, timeout=30)
         if r.status_code != 200:
+            if use_cache:
+                _write_xbrl_cache(cik, [])
             return []
         data = r.json()
     except Exception:
@@ -677,6 +752,8 @@ def fetch_xbrl_shares(session, cik):
         for v in unit_vals:
             vals.append({"val": v.get("val"), "end": v.get("end"),
                          "form": v.get("form"), "fy": v.get("fy"), "fp": v.get("fp")})
+    if use_cache:
+        _write_xbrl_cache(cik, vals)
     return vals
 
 
