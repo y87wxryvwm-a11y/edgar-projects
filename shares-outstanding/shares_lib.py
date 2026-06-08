@@ -75,6 +75,11 @@ PLAUSIBLE_MAX_SHARES = 5_000_000_000_000  # 5 trillion ceiling
 _CACHE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 DOC_CACHE_DIR = os.path.join(_CACHE_ROOT, "docs")
 XBRL_CACHE_DIR = os.path.join(_CACHE_ROOT, "xbrl")
+# Cleaned-text cache: the BeautifulSoup reduction of the primary document is the
+# slowest step and never changes when the PARSER changes, so caching it makes the
+# iterate-until-correct loop fast (re-extraction reads clean text and re-runs only
+# the regex logic). Delete .cache/clean to force a re-clean.
+CLEAN_CACHE_DIR = os.path.join(_CACHE_ROOT, "clean")
 
 
 def _read_doc_cache(accession):
@@ -95,6 +100,27 @@ def _write_doc_cache(accession, doc_type, raw, period):
     tmp = p + ".tmp"
     with gzip.open(tmp, "wt", encoding="utf-8") as f:
         json.dump({"doc_type": doc_type, "raw": raw, "period": period}, f)
+    os.replace(tmp, p)
+
+
+def _read_clean_cache(accession):
+    p = os.path.join(CLEAN_CACHE_DIR, f"{accession}.json.gz")
+    if not os.path.exists(p):
+        return None
+    try:
+        with gzip.open(p, "rt", encoding="utf-8") as f:
+            d = json.load(f)
+        return d["doc_type"], d["text"], d["period"]
+    except Exception:
+        return None
+
+
+def _write_clean_cache(accession, doc_type, text, period):
+    os.makedirs(CLEAN_CACHE_DIR, exist_ok=True)
+    p = os.path.join(CLEAN_CACHE_DIR, f"{accession}.json.gz")
+    tmp = p + ".tmp"
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:
+        json.dump({"doc_type": doc_type, "text": text, "period": period}, f)
     os.replace(tmp, p)
 
 
@@ -266,7 +292,7 @@ def stratified_sample(filings, n, mix=DEFAULT_MIX, seed=20260607):
 # ---------------------------------------------------------------------------
 # Primary document download + text reduction
 # ---------------------------------------------------------------------------
-def fetch_primary_document(session, filing, cap_bytes=6_000_000, use_cache=True):
+def fetch_primary_document(session, filing, cap_bytes=50_000_000, use_cache=True):
     """Return (doc_type, raw_html, period) for the filing's primary document,
     reading from the on-disk cache when present so re-runs don't re-download.
     The network path is in `_fetch_primary_document_network`; the cache stores
@@ -281,23 +307,49 @@ def fetch_primary_document(session, filing, cap_bytes=6_000_000, use_cache=True)
     return result
 
 
-def _fetch_primary_document_network(session, filing, cap_bytes=6_000_000):
+def get_clean_document(session, filing, use_cache=True):
+    """Return (doc_type, clean_text, period) for the filing's primary document,
+    reading the cleaned text from cache when present (so neither the network fetch
+    nor the BeautifulSoup reduction re-runs). This is the fast path the runner
+    scripts use; a warm clean cache makes re-extraction after a parser change
+    near-instant."""
+    if use_cache:
+        c = _read_clean_cache(filing.accession)
+        if c is not None:
+            return c
+    doc_type, raw, period = fetch_primary_document(session, filing, use_cache=use_cache)
+    text = html_to_text(raw)
+    if use_cache and text:
+        _write_clean_cache(filing.accession, doc_type, text, period)
+    return doc_type, text, period
+
+
+def _fetch_primary_document_network(session, filing, cap_bytes=50_000_000):
     """Stream the full submission .txt and return (doc_type, raw_html, period) for
     the FIRST <DOCUMENT> whose <TYPE> matches the filing's form. Streaming lets us
     stop after the primary document so we don't pull megabytes of XBRL/exhibits.
-    `period` is the SGML header's CONFORMED PERIOD OF REPORT as ISO (fiscal close)."""
-    resp = session.get(filing.txt_url, timeout=120, stream=True)
+    `period` is the SGML header's CONFORMED PERIOD OF REPORT as ISO (fiscal close).
+
+    The cap is generous (50 MB) because a few large filers (big-bank 20-Fs such as
+    Barclays / KB Financial) carry a multi-megabyte inline-XBRL header before the
+    readable cover, which a small cap would truncate away. To keep the join cheap
+    on those huge docs we only rebuild + scan the buffer when a chunk closes a
+    document or every ~1 MB, not on every chunk."""
+    resp = session.get(filing.txt_url, timeout=180, stream=True)
     resp.raise_for_status()
     buf, total = [], 0
     try:
-        for chunk in resp.iter_content(chunk_size=131072, decode_unicode=True):
+        for chunk in resp.iter_content(chunk_size=262144, decode_unicode=True):
             if not chunk:
                 continue
             buf.append(chunk)
             total += len(chunk)
-            joined = "".join(buf)
-            if joined.count("</DOCUMENT>") >= 1 and total > 40_000:
-                hit = _first_matching_document(joined, filing.form)
+            # A chunk closing a document means a complete document is in the buffer:
+            # try to extract (require_closed so a half-streamed primary doc is never
+            # returned truncated). This bounds the join to once per </DOCUMENT>.
+            if total > 40_000 and "</DOCUMENT>" in chunk:
+                joined = "".join(buf)
+                hit = _first_matching_document(joined, filing.form, require_closed=True)
                 if hit:
                     return hit[0], hit[1], _period_of_report(joined)
             if total > cap_bytes:
@@ -316,15 +368,22 @@ def _period_of_report(sgml_head):
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else ""
 
 
-def _first_matching_document(sgml, form):
+def _first_matching_document(sgml, form, require_closed=False):
+    """Find the first <DOCUMENT> whose <TYPE> matches `form` and return
+    (type, text). When `require_closed` (used while still streaming), only a
+    document whose <TEXT> is actually closed (</TEXT>/</DOCUMENT>) qualifies, so a
+    half-streamed primary document is never returned truncated. The final post-cap
+    call leaves it False so a document truncated exactly at the byte cap still
+    yields whatever streamed."""
     base = form.upper().split("/")[0]
+    tail = r"(</TEXT>|</DOCUMENT>)" if require_closed else r"(</TEXT>|</DOCUMENT>|$)"
     for doc in re.split(r"<DOCUMENT>", sgml)[1:]:
         tm = re.search(r"<TYPE>\s*([^\s<]+)", doc)
         if not tm:
             continue
         dtype = tm.group(1).strip()
         if dtype.upper().split("/")[0] == base:
-            txm = re.search(r"<TEXT>(.*?)(</TEXT>|</DOCUMENT>|$)", doc, re.DOTALL)
+            txm = re.search(r"<TEXT>(.*?)" + tail, doc, re.DOTALL)
             if txm:
                 return dtype, txm.group(1)
     return None
@@ -393,9 +452,24 @@ SCALE_FACTOR = {"": 1, "thousand": 1_000, "thousands": 1_000,
 # optionally followed by a scale word. Leading (?<![\$.\d]) keeps us off money and
 # decimals; we post-filter '%' and 'days'/'Section'/'Rule' contexts.
 _NUM_RE = re.compile(
-    r"(?<![\$.\d])(\d{1,3}(?:,\d{3})+|\d{3,})\s*(thousand|million|billion|thousands|millions|billions)?",
+    r"(?<![\$.\d])(\d{1,3}(?:,\d{3})+|\d+\.\d+|\d{3,})\s*(thousand|million|billion|thousands|millions|billions)?",
     re.I,
 )
+
+
+# A run is space-grouped thousands only if it is NOT also comma-grouped: a trailing
+# comma/digit means the space joined a label number to a real count ("Series 27 850,000").
+_SPACE_GROUPED_RE = re.compile(r"(?<![\d.])\d{1,3}(?: \d{3})+(?![,\d])")
+
+
+def _despace_numbers(s):
+    """Collapse European space-grouped thousands ("5 605 850 345" -> "5605850345")
+    so the comma/contiguous-digit number regex can read them. Only a clean grouping
+    is merged: a 1-3 digit lead group (not preceded by a digit or a decimal point)
+    followed by one or more space-separated EXACT 3-digit groups. This leaves dates
+    ("December 31 2024"), a decimal next to a separate number ("US$0.0000025
+    322,664,816"), and ordinary prose untouched."""
+    return _SPACE_GROUPED_RE.sub(lambda m: m.group(0).replace(" ", ""), s)
 
 _SHARE_WORDS = ("share", "stock", "common", "ordinary", "capital stock",
                 "preferred", "preference", "units", "depositary")
@@ -423,6 +497,9 @@ def classify_share_type(label):
         return "preferred"
     if "depositary" in low or "depository" in low or " ads" in low or low.startswith("ads"):
         return "depositary"
+    # units of beneficial interest / LP / trust units are not common stock
+    if "unit" in low:
+        return "other"
     if "ordinary" in low:
         return "ordinary"
     if "common" in low or "voting share" in low or "capital stock" in low:
@@ -524,7 +601,7 @@ def extract_anchor(text, period=""):
     start = m.end()
     stop = re.search(r"Indicate by check mark|\bIf this report\b", text[start:start + 2000], re.I)
     span = text[start: start + (stop.start() if stop else 1600)]
-    return _extract_span_pairs(span, period)
+    return _extract_span_pairs(_despace_numbers(span), period)
 
 
 # A class label = up to ~5 words ending in a class noun, optional Series suffix.
@@ -605,6 +682,7 @@ def extract_cover_window(text):
     share-count number tied to a share word, skipping decoy contexts. Captures
     multiple share classes (e.g. Alphabet A/B/C) naturally."""
     entries = []
+    text = _despace_numbers(text)
     for om in re.finditer(r"outstanding", text, re.I):
         opos = om.start()
         lo, hi = max(0, opos - 230), min(len(text), opos + 230)
@@ -668,22 +746,86 @@ def extract_cover_window(text):
 
 
 def _skip_number_context(text, ns, ne):
-    """Reject numbers that are not a standalone class count: a parenthetical
-    SUBSET of a larger total ("(including 335,787,795 … ADS)", "excluding 709,432
-    … held in treasury"), a treasury-share count, or a warrant count."""
-    pre = text[max(0, ns - 16):ns].lower()
-    post = text[ne:ne + 26].lower()
-    if re.search(r"\b(?:including|excluding|of which)\b[\s(]*$", pre):
+    """Reject numbers that are not a standalone OUTSTANDING class count: a grand
+    total that is then broken into its component classes, the 'issued' half of an
+    'X issued and Y outstanding' pair, a parenthetical SUBSET or restatement
+    ("(including 335,787,795 … ADS)", "(post-reverse-split adjusted to N)"), a
+    treasury or warrant count, or a non-affiliate market-value figure."""
+    pre = text[max(0, ns - 34):ns].lower()
+    post = text[ne:ne + 64].lower()
+
+    # subset / restatement: a portion of, or a re-expression of, another count.
+    # Exception: a number introduced by "including" that is itself a named CLASS
+    # component ("...including 84,463,737 Class A ... and 45,787,948 Class B") is a
+    # real component, not a subset -> keep it (the total before it is dropped below).
+    # "excluding / of which / representing / form of ..." ALWAYS marks a subset or a
+    # re-expression of another count -> drop it, even when it names a class
+    # ("excluding 277,628,320 Class A ordinary shares ... reserved for ADS issuance").
+    if re.search(r"\b(?:excluding|of which|representing|represented\s+by|reserved|"
+                 r"equivalent\s+to|adjusted\s+to|in\s+excess\s+of|(?:the\s+)?form\s+of)\b[\s(]*$", pre):
         return True
-    if re.match(r"\s*(?:class\s+[a-z]\s+)?(?:ordinary\s+|common\s+)?shares?\s+held\s+in\s+treasury",
-                post):
+    # "including N ..." is a subset UNLESS N is itself a named class component of the
+    # total that precedes it ("...including 84,463,737 Class A ... and 45,787,948 Class B").
+    if re.search(r"\bincluding\b[\s(]*$", pre) \
+       and not re.match(r"\s*[a-z'.&\- ]*?class\s+[a-z0-9]", post):
         return True
-    if re.match(r"\s+treasury\b", post):  # "N treasury shares" (a treasury count)
+    if re.search(r"(?:retroactively|post-?reverse|after\s+giving\s+effect|"
+                 r"as\s+adjusted|giving\s+retroactive)\b", pre):
         return True
-    # warrants are never the outstanding share count — "N warrants to purchase N
-    # shares" puts the word on either side of the number, so scan a small window.
-    if "warrant" in text[max(0, ns - 28):ne + 28].lower():
+    # any number sitting inside an "of which ..." sub-clause (same sentence) is a
+    # breakdown of the count before it, not a separate class -> drop it. A "." or a
+    # ")" between the "of which" and the number ends the sub-clause (e.g. a real
+    # class listed after a closed parenthetical), so don't reach across it.
+    ofw = re.search(r"\bof which\b", text[max(0, ns - 160):ns], re.I)
+    if ofw:
+        between = text[max(0, ns - 160) + ofw.end():ns]
+        if "." not in between and ")" not in between:
+            return True
+
+    # grand total immediately broken into its component classes -> keep components, drop total.
+    # The "consisting of"/"comprising"/"sum of" connective marks a redundant total; a bare
+    # "an aggregate of N shares ... outstanding" is just a normal single count -> keep it.
+    if re.match(r"[\s,]*[a-z()$.,&'/\-\s]{0,50}?\b(?:consisting\s+of|comprised\s+of|comprising|"
+                r"composed\s+of|being\s+the\s+sum\s+of|made\s+up\s+of|the\s+sum\s+of)\b", post):
         return True
+    # "X shares, including A Class A ... and B Class B" -> X is the total, drop it
+    if re.match(r"[\s,]*[a-z()$.,&'/\-\s]{0,45}?\bincluding\s+\d[\d,. ]*\s*"
+                r"(?:thousand|million|billion)?\s*[a-z'.&\- ]*?class\s+[a-z0-9]", post):
+        return True
+
+    # 'X shares issued and Y shares outstanding' -> X is the issued count, not the answer
+    if re.match(r"\s*(?:shares?\s+)?issued,?\s+and\s+(?:approximately\s+)?[\d(]", post) and \
+       not re.match(r"\s*(?:shares?\s+)?issued,?\s+and\s+outstanding", post):
+        return True
+
+    # treasury
+    if re.match(r"\s*(?:class\s+[a-z]\s+)?(?:ordinary\s+|common\s+)?shares?\s+held\s+in\s+treasury", post):
+        return True
+    if re.match(r"\s+(?:were\s+)?treasury\b", post) or "in treasury" in post[:34]:
+        return True
+
+    # warrants / options to purchase are never the outstanding share count
+    if re.search(r"\bwarrants?\b|\boptions?\s+to\s+purchase\b", text[max(0, ns - 30):ne + 30].lower()):
+        return True
+
+    # share repurchase / buyback / tender mentions ("accepted for purchase a total of
+    # approximately 56.6 million shares") are not the outstanding count. Guard on ")":
+    # a buyback word inside a closed parenthetical must not skip a real class that
+    # follows it ("...shares repurchased but not yet cancelled) and 322,483,772 Class B").
+    pre48 = text[max(0, ns - 48):ns].lower()
+    if ")" not in pre48 and re.search(
+            r"repurchas|buy-?back|accepted\s+for\s+purchase|for\s+purchase\s+a\s+total|"
+            r"tender(?:ed|\s+offer)|purchased\s+a\s+total", pre48):
+        return True
+
+    # non-affiliate market-value computation figures (the $-amount is skipped elsewhere).
+    # Tight: only a count tied to "non-affiliates" with no "outstanding" nearby — so the real
+    # cover count two sentences after a market-value line ("... $X. As of <date>, N shares ...
+    # outstanding") is NOT swallowed.
+    if re.search(r"non-?affiliate", text[max(0, ns - 55):ne + 45], re.I) and \
+       "outstanding" not in text[ne:ne + 55].lower():
+        return True
+
     return False
 
 
@@ -700,11 +842,13 @@ def _filter_10k_recency(entries, date_filed):
 
 
 def _to_int(num_str, scale_word):
+    # float() so decimal-with-scale-word counts ("45.0 million", "5.5 billion")
+    # parse; share counts are well within float64's exact-integer range (< 2^53).
     try:
-        base = int(num_str.replace(",", ""))
+        base = float(num_str.replace(",", "").replace(" ", ""))
     except ValueError:
         return None
-    return int(base * SCALE_FACTOR.get((scale_word or "").lower(), 1))
+    return int(round(base * SCALE_FACTOR.get((scale_word or "").lower(), 1)))
 
 
 def _dedupe(entries):
@@ -875,10 +1019,9 @@ def _days_between(a, b):
 def process_filing(session, filing, do_xbrl=True):
     ex = Extraction(filing=filing)
     try:
-        doc_type, raw, period = fetch_primary_document(session, filing)
+        doc_type, text, period = get_clean_document(session, filing)
         ex.doc_type = doc_type
         ex.period_of_report = period
-        text = html_to_text(raw)
         ex.text_len = len(text)
         if not text:
             ex.error = "empty primary document"
