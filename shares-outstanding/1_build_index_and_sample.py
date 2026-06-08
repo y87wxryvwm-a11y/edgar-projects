@@ -16,7 +16,7 @@ import shares_lib as L
 
 # ---- EDIT THIS --------------------------------------------------------------
 YEAR = 2025            # the "prior calendar year" of filings to sample from
-SAMPLE_SIZE = 60       # 60 for a validation pass; 1000 for the full study
+SAMPLE_SIZE = 1000     # 60 for a validation pass; 1000 for the full study
 SEED = 20260607        # fixed -> reproducible sample
 # Mix is the requested 50/40/10; override here only if the study spec changes.
 MIX = {"10-K": 0.50, "20-F": 0.40, "40-F": 0.10}

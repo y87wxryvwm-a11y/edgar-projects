@@ -27,12 +27,12 @@ def build_evidence(session, cik, accession, form):
     out.append(f"FORM={form}  DOC_TYPE={doc_type}  PERIOD_OF_REPORT={period}")
     out.append(f"FULL_TEXT_LEN={len(text):,}  COVER_LEN={len(cover):,}")
     out.append(f"TXT_URL={filing.txt_url}")
-    out.append("\n===== COVER REGION (first 6000 chars) =====")
-    out.append(cover[:6000])
-    out.append("\n===== ALL 'outstanding' CONTEXTS IN FULL DOCUMENT (±200 chars, up to 14) =====")
+    out.append("\n===== COVER REGION (first 9000 chars) =====")
+    out.append(cover[:9000])
+    out.append("\n===== ALL 'outstanding' CONTEXTS IN FULL DOCUMENT (±220 chars, up to 20) =====")
     hits = list(re.finditer(r"outstanding", text, re.I))
-    for i, m in enumerate(hits[:14]):
-        a, b = max(0, m.start() - 200), min(len(text), m.end() + 120)
+    for i, m in enumerate(hits[:20]):
+        a, b = max(0, m.start() - 220), min(len(text), m.end() + 160)
         out.append(f"[{i+1}] ...{re.sub(r'\\s+', ' ', text[a:b])}...")
     if not hits:
         out.append("(no 'outstanding' anywhere — filing may have no shares outstanding, e.g. an ABS trust)")

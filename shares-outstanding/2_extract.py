@@ -23,7 +23,7 @@ import shares_lib as L
 
 # ---- EDIT THIS --------------------------------------------------------------
 YEAR = 2025
-SAMPLE_SIZE = 60                 # must match the sample file you built
+SAMPLE_SIZE = 1000               # must match the sample file you built
 INPUT_CSV = None                 # None -> use sample_{YEAR}_n{SAMPLE_SIZE}.csv
 DO_XBRL = True                   # cross-check against SEC structured data
 LIMIT = None                     # cap rows for a quick test; None = all
