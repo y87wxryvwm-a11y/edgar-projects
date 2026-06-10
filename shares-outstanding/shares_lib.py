@@ -435,9 +435,10 @@ def cover_region(text):
 _MONTHS = ("January|February|March|April|May|June|July|August|September|"
            "October|November|December")
 _DATE_RE = re.compile(
-    rf"\b(?:{_MONTHS})\s+\d{{1,2}},?\s+\d{{4}}\b"
+    rf"\b(?:{_MONTHS})\s+\d{{1,2}}\s*,?\s+\d{{4}}\b"
     rf"|\b\d{{1,2}}\s+(?:{_MONTHS})\s+\d{{4}}\b"
-    rf"|\b\d{{4}}-\d{{2}}-\d{{2}}\b",
+    rf"|\b\d{{4}}-\d{{2}}-\d{{2}}\b"
+    rf"|\b(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])/(?:19|20)\d{{2}}\b",
     re.I,
 )
 _MONTH_NUM = {m.lower(): i + 1 for i, m in enumerate(
@@ -452,7 +453,9 @@ SCALE_FACTOR = {"": 1, "thousand": 1_000, "thousands": 1_000,
 # optionally followed by a scale word. Leading (?<![\$.\d]) keeps us off money and
 # decimals; we post-filter '%' and 'days'/'Section'/'Rule' contexts.
 _NUM_RE = re.compile(
-    r"(?<![\$.\d])(\d{1,3}(?:,\d{3})+|\d+\.\d+|\d{3,})\s*(thousand|million|billion|thousands|millions|billions)?",
+    r"(?<![\$.\d])(\d{1,3}(?:,\d{3})+|\d+\.\d+|\d{3,}"
+    r"|\d{1,2}(?=\s*(?:thousand|million|billion)s?\b))"  # "51 million"
+    r"\s*(thousand|million|billion|thousands|millions|billions)?",
     re.I,
 )
 
@@ -460,6 +463,26 @@ _NUM_RE = re.compile(
 # A run is space-grouped thousands only if it is NOT also comma-grouped: a trailing
 # comma/digit means the space joined a label number to a real count ("Series 27 850,000").
 _SPACE_GROUPED_RE = re.compile(r"(?<![\d.])\d{1,3}(?: \d{3})+(?![,\d])")
+
+# A comma-grouped number split across HTML table cells ("1,249 302" for 1,249,302):
+# an already-comma-grouped prefix followed by exactly one whitespace and a 3-digit
+# group. Dates never produce this shape (the space there follows the comma).
+_COMMA_SPLIT_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+)\s(\d{3})(?![\d.])")
+
+# "outstanding" with one spurious space injected mid-word by an HTML tag boundary
+# ("outsta nding", "ou tstanding") — the scanner keys on this exact word.
+_KW_SPLIT_RES = [re.compile(rf"\b{'outstanding'[:k]}\s+{'outstanding'[k:]}\b", re.I)
+                 for k in range(2, len("outstanding") - 1)]
+
+
+def _repair_artifacts(s):
+    prev = None
+    while prev != s:
+        prev = s
+        s = _COMMA_SPLIT_RE.sub(r"\1,\2", s)
+    for kw_re in _KW_SPLIT_RES:
+        s = kw_re.sub("outstanding", s)
+    return s
 
 
 def _despace_numbers(s):
@@ -480,7 +503,7 @@ def iso_date(raw):
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", raw)
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    m = re.match(rf"({_MONTHS})\s+(\d{{1,2}}),?\s+(\d{{4}})", raw, re.I)
+    m = re.match(rf"({_MONTHS})\s+(\d{{1,2}})\s*,?\s+(\d{{4}})", raw, re.I)
     if m:
         mo = _MONTH_NUM[m.group(1).lower()]
         return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(2)):02d}"
@@ -488,6 +511,9 @@ def iso_date(raw):
     if m:
         mo = _MONTH_NUM[m.group(2).lower()]
         return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(1)):02d}"
+    m = re.match(r"(\d{1,2})/(\d{1,2})/((?:19|20)\d{2})", raw)
+    if m:  # US cover tables print MM/DD/YYYY
+        return f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
     return ""
 
 
@@ -523,22 +549,41 @@ def _looks_like_year(num_str, scale_word):
 
 
 def _nearest_date(text, pos, window=260):
-    """Date closest to pos; prefer one introduced by 'as of' within the window."""
+    """Date closest to pos; prefer one introduced by 'as of'/'outstanding at/on'
+    within the window, and push away dates that belong to the aggregate-market-
+    value clause (a $ amount beside the date, or the 'last business day of the
+    second fiscal quarter' formula) — those describe the public float, never the
+    cover count."""
     lo, hi = max(0, pos - window), min(len(text), pos + window)
     span = text[lo:hi]
     best, best_d = "", 10 ** 9
     for m in _DATE_RE.finditer(span):
         center = lo + (m.start() + m.end()) // 2
         d = abs(center - pos)
-        pre = span[max(0, m.start() - 8):m.start()].lower()
-        if "as of" in pre or "as at" in pre:
-            d -= 50  # bias toward "as of <date>"
+        # whitespace-tolerant: HTML tag boundaries split "as of" into "as o f" /
+        # "As\nof", which must still earn the bias
+        pre = re.sub(r"\s+", " ", span[max(0, m.start() - 22):m.start()]).lower()
+        if re.search(r"\bas\s+o\s*f\s*$|\bas\s+at\s*$|\boutstanding\s+(?:at|on)\s*$", pre):
+            d -= 50
+        # a $ amount in the SAME clause just before the date ("price of $2.45 …
+        # as of <date>") — but a $ across a sentence/line boundary ("… was $66.1
+        # million. As of <date> …") belongs to the previous sentence, and a
+        # par-value decimal ("par value $0.001 per share, outstanding as of …")
+        # is not a market-value signal: no penalty for those
+        pre36 = span[max(0, m.start() - 36):m.start()]
+        seg = pre36.split("$")[-1] if "$" in pre36 else None
+        if (seg is not None and not re.search(r"[.;:]\s|\n", seg)
+                and not re.match(r"\s?0?\.\d", seg)) or \
+           re.match(r"\s*,?\s*(?:\([^)]{0,14}\)\s*)?(?:the\s+last\s+business\s+day\b|"
+                    r"(?:was|is|were|:)\s*(?:approximately\s+)?\$)",
+                    span[m.end():m.end() + 60], re.I):
+            d += 80
         if d < best_d:
             best, best_d = m.group(0), d
     return best
 
 
-_CLASS_TAIL = (r"(?:Class\s+[A-Z]\b[\w ]*?)?(?:Common\s+Stock|Common\s+Shares|"
+_CLASS_TAIL = (r"(?:(?:Class|Series)\s+[A-Z0-9]\b[\w ]*?)?(?:Common\s+Stock|Common\s+Shares|"
                r"Ordinary\s+Shares|Preferred\s+Stock|Preference\s+Shares|"
                r"Redeemable\s+Capital\s+Shares|Limited\s+Voting\s+Shares|"
                r"Subordinate\s+Voting\s+Shares|Capital\s+Stock|Common\s+Units|"
@@ -556,8 +601,8 @@ def _grab_class_label(text, num_start, num_end):
     if m:
         return re.sub(r"\s+", " ", m.group(1)).strip()
     pre = text[max(0, num_start - 110):num_start]
-    pm = list(re.finditer(r"(Class\s+[A-Z]\b[\w ]*?(?:Common\s+Stock|Common\s+Shares|"
-                          r"Stock|Shares)|Common\s+Stock|Common\s+Shares|Ordinary\s+Shares|"
+    pm = list(re.finditer(r"((?:Class|Series)\s+[A-Z0-9]\b[\w ]*?(?:Common\s+Stock|Common\s+Shares|"
+                          r"Preferred\s+Stock|Stock|Shares)|Common\s+Stock|Common\s+Shares|Ordinary\s+Shares|"
                           r"Preferred\s+Stock|Preference\s+Shares|Capital\s+Stock|"
                           r"Redeemable\s+Capital\s+Shares|Limited\s+Voting\s+Shares)", pre, re.I))
     if pm:
@@ -682,10 +727,35 @@ def extract_cover_window(text):
     share-count number tied to a share word, skipping decoy contexts. Captures
     multiple share classes (e.g. Alphabet A/B/C) naturally."""
     entries = []
-    text = _despace_numbers(text)
-    for om in re.finditer(r"outstanding", text, re.I):
+    text = _repair_artifacts(_despace_numbers(text))
+    for om in re.finditer(r"outstanding|\bthere\s+(?:were|are)\b|\bregistrant\s+had\b",
+                          text, re.I):
         opos = om.start()
+        if om.group(0).lower() != "outstanding":
+            # auxiliary anchor: the canonical "As of <date>, there were N shares
+            # … outstanding" count sentence can soft-wrap across many lines,
+            # pushing the early numbers out of reach of the "outstanding" token
+            # itself. Only scan if this sentence does end in "outstanding"
+            # (sentence end = period not inside a decimal).
+            sent = text[opos:opos + 620]
+            cut = re.search(r"(?<!\d)\.(?=\s)", sent)
+            if cut:
+                sent = sent[:cut.start()]
+            if "outstanding" not in sent.lower():
+                continue
         lo, hi = max(0, opos - 230), min(len(text), opos + 230)
+        # extend the base window toward ±500, but only within the same sentence/
+        # line: a long multi-class sentence keeps its early classes (Hines-style
+        # NAV REITs, "the following outstanding shares … :" listings) while a
+        # neighboring line (ticker codes, file numbers, the market-value
+        # sentence) never bleeds in
+        far_lo = max(0, opos - 500)
+        seg = text[far_lo:lo]
+        cut = max(seg.rfind(". "), seg.rfind("\n"))
+        lo = far_lo + cut + 1 if cut != -1 else far_lo
+        far_hi = min(len(text), opos + 500)
+        m2 = re.search(r"\.\s|\n", text[hi:far_hi])
+        hi = hi + m2.start() if m2 else far_hi
         window = text[lo:hi]
         low = window.lower()
         # need a share word in the window
@@ -696,6 +766,10 @@ def extract_cover_window(text):
             n_end = lo + nm.end()
             # skip calendar years bleeding in from dates
             if _looks_like_year(nm.group(1), nm.group(2)):
+                continue
+            # a digit right after the match means we read a prefix of a longer
+            # run ("March 28,2025" -> "28,202" + "5") — malformed, never a count
+            if n_end < len(text) and text[n_end].isdigit():
                 continue
             # skip dollar amounts ("$ 69,405,000" — note the space after $)
             if "$" in text[max(0, n_start - 5):n_start]:
@@ -735,13 +809,45 @@ def extract_cover_window(text):
             if "weighted" in pre:
                 continue
             label = _grab_class_label(text, n_start, n_end)
+            # primary window 240; widen only when empty so a long multi-class
+            # sentence still reaches its single leading "As of <date>" anchor
+            # without letting decoy dates into the ordinary case
             raw_date = _nearest_date(text, (n_start + n_end) // 2, window=240)
+            if not raw_date:
+                raw_date = _nearest_date(text, (n_start + n_end) // 2, window=420)
+            # "As of D1 and D2, there were N1 and N2 …": pair the k-th number
+            # with the k-th date, not the nearest one
+            dpat = rf"(?:{_MONTHS})\s+\d{{1,2}}\s*,?\s+\d{{4}}"
+            dual = re.search(rf"as\s+of\s+({dpat})\s+and\s+({dpat})[\s,]+there\s+were\s+"
+                             rf"([\d,]+\s+and\s+)?$",
+                             re.sub(r"\s+", " ", text[max(0, n_start - 140):n_start]), re.I)
+            if dual:
+                raw_date = dual.group(2) if dual.group(3) else dual.group(1)
             entries.append(ClassEntry(
                 shares=num, raw_number=nm.group(1), scale=(nm.group(2) or "").lower(),
                 class_label=label, share_type=classify_share_type(label) if label else "common",
                 as_of_date=iso_date(raw_date), raw_date=raw_date,
                 matched_text=re.sub(r"\s+", " ", text[max(0, n_start - 80):n_end + 50]).strip(),
             ))
+    # tiny named-class counts ("… and 1 Class B ordinary share issued and
+    # outstanding") fall below the number-regex/plausibility floor; pick them up
+    # only when explicitly tied to a class phrase in an outstanding sentence
+    for sm in re.finditer(r"(?<![\d,.$-])(\d{1,2})\s+(Class\s+[A-Z]\s+)"
+                          r"(ordinary|common)\s+shares?\b", text, re.I):
+        fwd = text[sm.end():sm.end() + 160]
+        cut = re.search(r"\.\s|\n", fwd)
+        if cut:
+            fwd = fwd[:cut.start()]
+        if not re.search(r"\bissued\s+and\s+outstanding|\boutstanding\b", fwd, re.I):
+            continue
+        label = f"{sm.group(2).strip()} {sm.group(3)} shares"
+        raw_date = _nearest_date(text, (sm.start(1) + sm.end(1)) // 2, window=400)
+        entries.append(ClassEntry(
+            shares=int(sm.group(1)), raw_number=sm.group(1), scale="",
+            class_label=label, share_type=classify_share_type(label),
+            as_of_date=iso_date(raw_date), raw_date=raw_date,
+            matched_text=re.sub(r"\s+", " ", text[max(0, sm.start() - 60):sm.end() + 60]).strip(),
+        ))
     return _dedupe(entries)
 
 
@@ -761,14 +867,65 @@ def _skip_number_context(text, ns, ne):
     # "excluding / of which / representing / form of ..." ALWAYS marks a subset or a
     # re-expression of another count -> drop it, even when it names a class
     # ("excluding 277,628,320 Class A ordinary shares ... reserved for ADS issuance").
-    if re.search(r"\b(?:excluding|of which|representing|represented\s+by|reserved|"
+    if re.search(r"\b(?:excludes|excluding|of which|representing|represented\s+by|reserved|"
                  r"equivalent\s+to|adjusted\s+to|in\s+excess\s+of|(?:the\s+)?form\s+of)\b[\s(]*$", pre):
         return True
-    # "including N ..." is a subset UNLESS N is itself a named class component of the
-    # total that precedes it ("...including 84,463,737 Class A ... and 45,787,948 Class B").
-    if re.search(r"\bincluding\b[\s(]*$", pre) \
-       and not re.match(r"\s*[a-z'.&\- ]*?class\s+[a-z0-9]", post):
+    # "excluding treasury shares of N", "excludes the market value of N" — the
+    # qualifier may sit a few words before the number; a comma/paren/period ends
+    # the exclusion clause so a real count after it is not swallowed
+    if re.search(r"\bexclud(?:es|ing)\b[^.;,)]{0,55}$", text[max(0, ns - 70):ns], re.I):
         return True
+    # "including N ..." / "(which includes N ...)" is a subset UNLESS N is itself a
+    # named class component of the total that precedes it
+    # ("...including 84,463,737 Class A ... and 45,787,948 Class B"). A class
+    # phrase qualified as tendered/reserved/unvested/... is still a subset.
+    if re.search(r"\binclud(?:ing|es)\b[\s(]*$", pre) \
+       and not (re.match(r"\s*[a-z'.&\- ]*?class\s+[a-z0-9]", post)
+                and not re.search(r"\b(?:tender|redeem|redempt|reserved|escrow|"
+                                  r"forfeit|unvested|underlying|issuable)",
+                                  text[ne:ne + 90].lower())):
+        return True
+    # "does not include N ..." explicitly marks the number as outside the count
+    if re.search(r"\b(?:does\s+not|do\s+not|not)\s+includ(?:e|ed|ing)\b[^.;,]{0,30}$",
+                 text[max(0, ns - 45):ns], re.I):
+        return True
+    # "N shares ... issuable upon ..." — issuable shares are never outstanding
+    if re.search(r"^\s*(?:[a-z'.&\- ]{0,30})?shares?\b[^.;]{0,45}\bissuable\b",
+                 text[ne:ne + 90], re.I):
+        return True
+    # the denominator of a split ratio ("1-for-4,000 reverse stock split")
+    if re.search(r"\d\s*-\s*for\s*-\s*$", text[max(0, ns - 12):ns], re.I):
+        return True
+    # market-value computation figures: "based on N shares", "N shares at $X per
+    # share", "N at a closing price of $X" — float math, not the cover count
+    if re.search(r"\bbased\s+(?:up)?on(?:\s+the)?\s*$", text[max(0, ns - 22):ns], re.I):
+        return True
+    if re.search(r"^\s*(?:shares?\s+)?at\s+\$[\d,.]+\s+per\s+share|"
+                 r"^\s*(?:shares?\s+)?at\s+a\s+(?:closing\s+|sale\s+)?price\b",
+                 text[ne:ne + 60], re.I):
+        return True
+    # "N shares outstanding ... , or M in the aggregate" — N is a net subset
+    # superseded by the aggregate count M that follows
+    if re.search(r"\bor\s+[\d,]+(?:\s+\w+){0,4}\s+in\s+the\s+aggregate\b",
+                 text[ne:ne + 110], re.I):
+        return True
+    # "issued and outstanding N1 and N2, respectively" — N1 is the issued half
+    if re.search(r"\bissued\s+and\s+outstanding[:\s]*$", text[max(0, ns - 60):ns], re.I) and \
+       re.match(r"\s*and\s+[\d,]+[^.;]{0,80}?\brespectively\b", text[ne:ne + 130], re.I):
+        return True
+    # "there were N1 and N2 ... shares ... issued and outstanding, respectively"
+    # (or "... N1 and N2, respectively, shares ... issued and outstanding") —
+    # the current number, followed directly by a sibling number, is the issued
+    # half. Scan the rest of the number's own sentence, ignoring decimal points
+    # (par values) when finding the sentence end.
+    if re.match(r"\s*and\s+[\d,]+\b", post):
+        fwd = text[ne:ne + 220]
+        cut = re.search(r"(?<!\d)\.(?=\s)", fwd)
+        if cut:
+            fwd = fwd[:cut.start()]
+        low_fwd = fwd.lower()
+        if "respectively" in low_fwd and "issued" in low_fwd and "outstanding" in low_fwd:
+            return True
     if re.search(r"(?:retroactively|post-?reverse|after\s+giving\s+effect|"
                  r"as\s+adjusted|giving\s+retroactive)\b", pre):
         return True
@@ -793,9 +950,12 @@ def _skip_number_context(text, ns, ne):
                 r"(?:thousand|million|billion)?\s*[a-z'.&\- ]*?class\s+[a-z0-9]", post):
         return True
 
-    # 'X shares issued and Y shares outstanding' -> X is the issued count, not the answer
-    if re.match(r"\s*(?:shares?\s+)?issued,?\s+and\s+(?:approximately\s+)?[\d(]", post) and \
-       not re.match(r"\s*(?:shares?\s+)?issued,?\s+and\s+outstanding", post):
+    # 'X [shares of the registrant's common stock] issued and Y outstanding' ->
+    # X is the issued count, not the answer; the class descriptor between the
+    # number and "issued" can run several words
+    post80 = text[ne:ne + 80].lower()
+    if re.search(r"\bissued,?\s+and\s+(?:approximately\s+)?[\d(]", post80) and \
+       not re.search(r"\bissued,?\s+and\s+outstanding", post80):
         return True
 
     # treasury
@@ -805,6 +965,9 @@ def _skip_number_context(text, ns, ne):
         return True
 
     # warrants / options to purchase are never the outstanding share count
+    # (kept tight at ±30: 20-F covers list "Warrants" as a registered-class line
+    # right next to the share count; the "issuable" guard above handles the
+    # trailing "issuable upon exercise of warrants" clause)
     if re.search(r"\bwarrants?\b|\boptions?\s+to\s+purchase\b", text[max(0, ns - 30):ne + 30].lower()):
         return True
 
@@ -818,12 +981,21 @@ def _skip_number_context(text, ns, ne):
             r"tender(?:ed|\s+offer)|purchased\s+a\s+total", pre48):
         return True
 
-    # non-affiliate market-value computation figures (the $-amount is skipped elsewhere).
-    # Tight: only a count tied to "non-affiliates" with no "outstanding" nearby — so the real
-    # cover count two sentences after a market-value line ("... $X. As of <date>, N shares ...
-    # outstanding") is NOT swallowed.
-    if re.search(r"non-?affiliate", text[max(0, ns - 55):ne + 45], re.I) and \
-       "outstanding" not in text[ne:ne + 55].lower():
+    # non-affiliate market-value / public-float figures: a count whose own
+    # SENTENCE ties it to "non-affiliates" nearby is a float or denominator
+    # number, never the cover outstanding count ("there were N shares
+    # outstanding held by non-affiliates, and the aggregate market value was
+    # $X"). Bounded both by the sentence and by ±130 chars: flattened cover
+    # TABLES run boundary-less, so the market-value row above must not reach
+    # the real count in the row below.
+    s_lo = max(0, ns - 130)
+    seg = text[s_lo:ns]
+    b = max(seg.rfind(". "), seg.rfind("\n"))
+    sent_start = s_lo + b + 1 if b != -1 else s_lo
+    fwd = text[ne:ne + 130]
+    m_end = re.search(r"\.\s|\n", fwd)
+    sent_end = ne + (m_end.start() if m_end else 130)
+    if re.search(r"non-?\s?affiliate", text[sent_start:sent_end], re.I):
         return True
 
     return False
@@ -1059,6 +1231,23 @@ def process_filing(session, filing, do_xbrl=True):
         # provided at least one such recent count exists.
         if filing.form == "10-K":
             entries = _filter_10k_recency(entries, filing.date_filed)
+            # dual-date covers ("As of <fiscal close> and <practicable date>,
+            # there were N1 and N2 …") and market-value reference counts carry
+            # an older date than the real count: keep only the latest-dated
+            # entries. Safe corpus-wide — no audited filing states two classes
+            # with different as-of dates.
+            dts = sorted({e.as_of_date for e in entries if e.as_of_date})
+            if len(dts) > 1:
+                entries = [e for e in entries if e.as_of_date == dts[-1]]
+            # combined multi-registrant filings (Exelon + ComEd …) list each
+            # co-registrant's count; the lead registrant's is the largest
+            if "MULTI_REGISTRANT" in ex.flags and len(entries) > 1:
+                best = {}
+                for e in entries:
+                    k = (e.share_type, e.as_of_date)
+                    if k not in best or e.shares > best[k].shares:
+                        best[k] = e
+                entries = list(best.values())
         ex.entries = entries
 
         if do_xbrl:
