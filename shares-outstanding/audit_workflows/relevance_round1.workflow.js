@@ -1,6 +1,6 @@
 export const meta = {
   name: 'shares-relevance-round1',
-  description: 'Two independent blind classification passes (A/B) deciding study relevance for each sampled 10-K registrant; each agent writes its verdicts to disk',
+  description: 'Two independent blind classification passes (A/B) deciding study relevance for each sampled registrant; each agent writes its verdicts to disk',
   phases: [{ title: 'Classify', detail: 'two agents per batch (pass A and pass B), each reads the cover evidence and categorizes every filing' }],
 }
 
@@ -12,7 +12,7 @@ if (!Array.isArray(work) || !work.length || !batchesDir || !resultsDir) {
 }
 const pad = (i) => String(i).padStart(3, '0')
 
-const DEFINITIONS = `The study covers SHARES OUTSTANDING of corporate equity issuers. Classify each 10-K registrant into exactly one category:
+const DEFINITIONS = `The study covers SHARES OUTSTANDING of corporate equity issuers. Classify each registrant into exactly one category:
 
 - "RELEVANT" — the registrant is a CORPORATION (Inc., Corp., Co., Ltd., PLC, S.A., N.V., bancorp, REIT incorporated as a corporation, SPAC, holding company...) with at least one class of common/ordinary equity SHARES outstanding that is held by public investors — exchange-listed OR registered with outside/public shareholders even if not listed (non-traded REITs and other 12(g) registrants are RELEVANT).
 - "NOT_RELEVANT_ABS" — asset-backed-securities / securitization vehicle: CMBS or RMBS mortgage trusts, auto/equipment/consumer receivables owner trusts and their depositor LLCs, utility cost-recovery/securitization funding LLCs (e.g. wildfire or storm recovery bond issuers), structured-products repackaging trusts (STRATS, CORTS, IndexPlus...). Covers typically show "issuing entity / depositor / sponsor" blocks and no equity discussion. This category takes precedence over the other NOT_RELEVANT categories.
@@ -20,6 +20,7 @@ const DEFINITIONS = `The study covers SHARES OUTSTANDING of corporate equity iss
 - "NOT_RELEVANT_DEBT_ONLY" — the registrant has NO public equity at all and files because of registered debt or similar: wholly-owned subsidiaries whose stock is 100% held by the parent (a cover line like "all of the registrant's outstanding common stock is held by X Corp" means DEBT_ONLY even though a share count is printed), member-owned cooperatives and Federal Home Loan Banks (capital stock held only by member institutions, no public market), mutual companies.
 - "UNDETERMINABLE" — use rarely, only when the evidence is genuinely insufficient.
 
+Foreign-issuer rules (20-F / 40-F): a foreign private issuer or Canadian MJDS issuer whose equity is common/ordinary shares (including shares represented by ADSs) held by public investors is RELEVANT — ADS structures do not make it a unit issuer. Foreign funds/unit trusts with units => NOT_RELEVANT_UNITS; foreign subsidiary debt issuers or covered-bond vehicles with no public equity => NOT_RELEVANT_DEBT_ONLY.
 Edge rules:
 - SPACs are corporations: their listed "units" are bundles of Class A shares + warrants/rights, and the registrant has common/ordinary shares outstanding => RELEVANT.
 - An OPERATING company organized as a trust whose public security is "common shares of beneficial interest" (e.g. some exchange-listed REIT trusts) => RELEVANT, but set "borderline": true.
@@ -37,7 +38,7 @@ const SCHEMA_TEXT = (id) => `{"batch_id":"${id}","results":[
    "evidence":"<the exact cover text you relied on (registrant name line, security descriptions, 'held by parent' lines...), <=400 chars>"}
 ]}`
 
-const PROMPT_A = (id, batchPath, outPath) => `You are an INDEPENDENT auditor classifying SEC 10-K registrants for study RELEVANCE. You decide from the cover evidence alone.
+const PROMPT_A = (id, batchPath, outPath) => `You are an INDEPENDENT auditor classifying SEC annual-report registrants (10-K / 20-F / 40-F) for study RELEVANCE. You decide from the cover evidence alone.
 
 Read the batch file at this absolute path:
 ${batchPath}
@@ -53,7 +54,7 @@ EXACT JSON shape:
 ${SCHEMA_TEXT(id)}
 Include EVERY filing of the batch exactly once, in order. Be meticulous: a wrong RELEVANT/NOT_RELEVANT call corrupts the study sample. After the Write succeeds, reply with one line: "DONE ${id}".`
 
-const PROMPT_B = (id, batchPath, outPath) => `You are an INDEPENDENT auditor classifying SEC 10-K registrants for study RELEVANCE. Work CHECKLIST-FIRST for each filing — answer these in order, from the cover evidence alone, before you pick a category:
+const PROMPT_B = (id, batchPath, outPath) => `You are an INDEPENDENT auditor classifying SEC annual-report registrants (10-K / 20-F / 40-F) for study RELEVANCE. Work CHECKLIST-FIRST for each filing — answer these in order, from the cover evidence alone, before you pick a category:
 1. LEGAL FORM: from the registrant's exact name and the "(State or other jurisdiction of incorporation or organization)" line — corporation, LP, LLC, or trust?
 2. EQUITY SECURITIES: what equity does the registrant itself have outstanding, and what is it called on the cover — shares of stock, units, beneficial/membership interests, or none?
 3. PUBLIC HOLDERS: is any of that equity held by the public (listed on an exchange, or registered with outside shareholders), or is it all held by a parent / member institutions?

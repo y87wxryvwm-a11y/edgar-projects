@@ -12,12 +12,15 @@ import os
 import csv
 import json
 
+from shares_lib import class_designator
+
 # ---- EDIT THIS --------------------------------------------------------------
 YEAR = 2025
 SAMPLE_SIZE = 1000
 NUM_TOL = 0.002          # 0.2% — absorbs "5,822 million" cover rounding only
 CHECK_DATE = True
 CHECK_TYPE = True        # treat common/ordinary as interchangeable
+CHECK_LABEL = True       # compare the Class/Series designator ("AX", "B", "I-S")
 # -----------------------------------------------------------------------------
 
 try:
@@ -86,6 +89,14 @@ def check(gold, ext_entries):
             gt, et = g_type.get(a, ""), e_type.get(e, "")
             if gt and et and gt != et and not ({gt, et} <= EQUITY):
                 return "FAIL_TYPE", f"{e}: ext={et} truth={gt}"
+    if CHECK_LABEL:
+        g_lab = {c["number"]: class_designator(c.get("share_class", ""))
+                 for c in g_classes if c.get("number")}
+        e_lab = {x["shares"]: class_designator(x.get("class_label", ""))
+                 for x in ext_entries if x.get("shares")}
+        for a, e in pairs:
+            if g_lab.get(a, "") != e_lab.get(e, ""):
+                return "FAIL_LABEL", f"{e}: ext='{e_lab.get(e, '')}' truth='{g_lab.get(a, '')}'"
     return "PASS", ""
 
 

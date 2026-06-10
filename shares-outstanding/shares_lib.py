@@ -517,6 +517,15 @@ def iso_date(raw):
     return ""
 
 
+def class_designator(label):
+    """The bare class/series designator: "Class AX common stock" -> "AX",
+    "Series A Preferred Stock" -> "A", "Class I-S" -> "I-S"; "" when the label
+    names no class."""
+    m = re.search(r"\b(?:class|series)\s+(?!of\b|no\b)([a-z0-9]{1,3}(?:-[a-z0-9]{1,3})?)\b",
+                  (label or "").lower())
+    return m.group(1).upper() if m else ""
+
+
 def classify_share_type(label):
     low = label.lower()
     if "preferred" in low or "preference" in low:
@@ -583,7 +592,7 @@ def _nearest_date(text, pos, window=260):
     return best
 
 
-_CLASS_TAIL = (r"(?:(?:Class|Series)\s+[A-Z0-9]\b[\w ]*?)?(?:Common\s+Stock|Common\s+Shares|"
+_CLASS_TAIL = (r"(?:(?:Class|Series)\s+[A-Z0-9]{1,3}(?:-[A-Z0-9]{1,3})?\b[\w ]*?)?(?:Common\s+Stock|Common\s+Shares|"
                r"Ordinary\s+Shares|Preferred\s+Stock|Preference\s+Shares|"
                r"Redeemable\s+Capital\s+Shares|Limited\s+Voting\s+Shares|"
                r"Subordinate\s+Voting\s+Shares|Capital\s+Stock|Common\s+Units|"
@@ -595,13 +604,24 @@ def _grab_class_label(text, num_start, num_end):
     'shares of <CLASS>' construction (Apple/Alphabet); otherwise take the
     nearest 'Class X ...' or class keyword before the number (Amerant)."""
     post = text[num_end:num_end + 110]
-    m = re.match(r"[\s,]*(?:thousand|million|billion)?\s*shares?\s+of\s+"
+    # "N [outstanding] shares of [the registrant's] <CLASS>" — tolerates the
+    # split-word artifact "o f" and an intervening "outstanding"
+    m = re.match(r"[\s,]*(?:thousand|million|billion)?\s*(?:outstanding\s+)?shares?\s+o\s*f\s+"
                  r"(?:the\s+|its\s+|Alphabet'?s?\s+|registrant'?s?\s+)*"
                  r"(" + _CLASS_TAIL + r")", post, re.I)
     if m:
         return re.sub(r"\s+", " ", m.group(1)).strip()
+    # "N <CLASS>" / "N of the registrant's <CLASS>" ("4,772 Class D shares",
+    # "1,758,476 of the registrant's Class A ordinary shares") — only when the
+    # tail carries an explicit Class/Series designator, so a bare "shares" here
+    # never shadows a better label before the number
+    m = re.match(r"[\s,]*(?:thousand|million|billion)?\s*"
+                 r"(?:o\s*f\s+(?:the\s+|its\s+|registrant'?s?\s+|company'?s?\s+|issuer'?s?\s+)+)?"
+                 r"(" + _CLASS_TAIL + r")", post, re.I)
+    if m and class_designator(m.group(1)):
+        return re.sub(r"\s+", " ", m.group(1)).strip()
     pre = text[max(0, num_start - 110):num_start]
-    pm = list(re.finditer(r"((?:Class|Series)\s+[A-Z0-9]\b[\w ]*?(?:Common\s+Stock|Common\s+Shares|"
+    pm = list(re.finditer(r"((?:Class|Series)\s+[A-Z0-9]{1,3}(?:-[A-Z0-9]{1,3})?\b[\w ]*?(?:Common\s+Stock|Common\s+Shares|"
                           r"Preferred\s+Stock|Stock|Shares)|Common\s+Stock|Common\s+Shares|Ordinary\s+Shares|"
                           r"Preferred\s+Stock|Preference\s+Shares|Capital\s+Stock|"
                           r"Redeemable\s+Capital\s+Shares|Limited\s+Voting\s+Shares)", pre, re.I))

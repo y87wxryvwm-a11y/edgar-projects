@@ -26,6 +26,8 @@ import shares_lib as L
 YEAR = 2025
 SAMPLE_SIZE = 1000               # must match the sample file
 BATCH_SIZE = 10                  # filings per classification agent
+FORMS = ["20-F", "40-F"]         # which sampled forms to batch
+BATCH_ID_OFFSET = 50             # continue numbering after earlier batches
 # -----------------------------------------------------------------------------
 
 try:
@@ -66,8 +68,8 @@ def main():
     os.makedirs(batches_dir, exist_ok=True)
 
     rows = [r for r in csv.DictReader(open(sample_csv, encoding="utf-8"))
-            if r["form"] == "10-K"]
-    print(f"{len(rows)} 10-K filings in the sample")
+            if r["form"] in FORMS]
+    print(f"{len(rows)} {'/'.join(FORMS)} filings in the sample")
 
     items, missing = [], []
     for r in rows:
@@ -84,7 +86,7 @@ def main():
 
     n_batches = 0
     for i in range(0, len(items), BATCH_SIZE):
-        bid = f"{i // BATCH_SIZE:03d}"
+        bid = f"{i // BATCH_SIZE + BATCH_ID_OFFSET:03d}"
         with open(os.path.join(batches_dir, f"batch_{bid}.json"), "w", encoding="utf-8") as f:
             json.dump(items[i:i + BATCH_SIZE], f, indent=1)
         n_batches += 1
