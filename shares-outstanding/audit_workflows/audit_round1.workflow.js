@@ -50,7 +50,8 @@ const res = await parallel(
     const id = pad(i)
     const batchPath = `${batchesDir}/batch_${id}.json`
     const outPath = `${resultsDir}/batch_${id}.json`
-    return agent(PROMPT(id, batchPath, outPath), { label: `audit:${id}`, phase: 'Audit' })
+    // model policy: bulk evidence-reading runs on haiku, never the inherited Fable tier
+    return agent(PROMPT(id, batchPath, outPath), { label: `audit:${id}`, phase: 'Audit', model: 'haiku' })
   })
 )
 

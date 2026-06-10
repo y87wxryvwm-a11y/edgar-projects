@@ -60,7 +60,8 @@ const res = await parallel(
     const id = pad(i)
     const batchPath = `${batchesDir}/adjbatch_${id}.json`
     const outPath = `${resultsDir}/adjbatch_${id}.json`
-    return agent(PROMPT(id, batchPath, outPath), { label: `adj:${id}`, phase: 'Adjudicate' })
+    // model policy: adjudication runs on sonnet, never the inherited Fable tier
+    return agent(PROMPT(id, batchPath, outPath), { label: `adj:${id}`, phase: 'Adjudicate', model: 'sonnet' })
   })
 )
 const returned = res.filter(Boolean).length
