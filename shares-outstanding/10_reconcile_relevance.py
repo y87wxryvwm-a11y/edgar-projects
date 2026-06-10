@@ -7,12 +7,12 @@ Stage logic (auto-detected):
      missing read) are written as round-2 adjudication batches.
   2. After relevance_round2.workflow.js: merges the adjudicators' definitive
      rulings and writes relevance_{YEAR}_n{SAMPLE_SIZE}.json covering ALL
-     sampled filings — 10-Ks from the agent rounds, 20-F / 40-F marked
-     NOT_RELEVANT_FORM by rule (the study's relevant universe is corporate
-     10-K registrants with public equity shares).
+     sampled filings. Every form (10-K / 20-F / 40-F) is agent-classified —
+     the relevant universe is corporate registrants with public equity shares
+     on any annual form.
 
 Categories: RELEVANT | NOT_RELEVANT_ABS | NOT_RELEVANT_UNITS |
-NOT_RELEVANT_DEBT_ONLY | NOT_RELEVANT_FORM.
+NOT_RELEVANT_DEBT_ONLY.
 """
 
 import os
@@ -74,7 +74,6 @@ def load_round2():
 
 def main():
     rows = list(csv.DictReader(open(sample_csv, encoding="utf-8")))
-    tenk = [r for r in rows if r["form"] == "10-K"]
     items = {}
     for fp in sorted(glob.glob(os.path.join(batches_dir, "batch_*.json"))):
         for it in json.load(open(fp, encoding="utf-8")):
@@ -85,7 +84,7 @@ def main():
     print(f"pass A: {len(A)}  pass B: {len(B)}  round2 rulings: {len(rulings)}")
 
     final, disputes, recon = {}, [], []
-    for r in tenk:
+    for r in rows:
         acc = r["accession"]
         a, b = A.get(acc), B.get(acc)
         ca = (a or {}).get("category", "")
@@ -121,9 +120,15 @@ def main():
     if disputes:
         os.makedirs(r2_batches_dir, exist_ok=True)
         os.makedirs(r2_results_dir, exist_ok=True)
+        # never reuse a batch id that already has a ruling on disk — a later
+        # reconcile round must not clobber earlier adjudications
+        used = [int(os.path.basename(p)[6:9]) for p in
+                glob.glob(os.path.join(r2_results_dir, "batch_*.json")) +
+                glob.glob(os.path.join(r2_batches_dir, "batch_*.json"))]
+        offset = max(used) + 1 if used else 0
         n = 0
         for i in range(0, len(disputes), ROUND2_BATCH_SIZE):
-            bid = f"{i // ROUND2_BATCH_SIZE:03d}"
+            bid = f"{i // ROUND2_BATCH_SIZE + offset:03d}"
             with open(os.path.join(r2_batches_dir, f"batch_{bid}.json"), "w",
                       encoding="utf-8") as f:
                 json.dump(disputes[i:i + ROUND2_BATCH_SIZE], f, indent=1)
@@ -133,15 +138,7 @@ def main():
         print("Run audit_workflows/relevance_round2.workflow.js, then re-run this script.")
         return
 
-    # everything resolved — add the form rule and write the final table
-    for r in rows:
-        if r["form"] != "10-K":
-            final[r["accession"]] = {"relevant": False,
-                                     "category": "NOT_RELEVANT_FORM",
-                                     "registrant_kind": "", "borderline": False,
-                                     "confidence": "high",
-                                     "evidence": f"form {r['form']} — non-10-K annual report, excluded by rule",
-                                     "source": "rule_form"}
+    # everything resolved — write the final table
     assert len(final) == len(rows), (len(final), len(rows))
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(final, f, indent=1)

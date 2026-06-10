@@ -469,10 +469,14 @@ _SPACE_GROUPED_RE = re.compile(r"(?<![\d.])\d{1,3}(?: \d{3})+(?![,\d])")
 # group. Dates never produce this shape (the space there follows the comma).
 _COMMA_SPLIT_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+)\s(\d{3})(?![\d.])")
 
-# "outstanding" with one spurious space injected mid-word by an HTML tag boundary
-# ("outsta nding", "ou tstanding") — the scanner keys on this exact word.
-_KW_SPLIT_RES = [re.compile(rf"\b{'outstanding'[:k]}\s+{'outstanding'[k:]}\b", re.I)
-                 for k in range(2, len("outstanding") - 1)]
+# key words with one spurious space injected mid-word by an HTML tag boundary
+# ("outsta nding", "Clas s", "share s") — the scanner and the label binders key
+# on these exact words.
+_KW_SPLIT_RES = [
+    (kw, [re.compile(rf"\b{kw[:k]}\s+{kw[k:]}\b", re.I)
+          for k in range(2, len(kw))])
+    for kw in ("outstanding", "class", "series", "shares")
+]
 
 
 def _repair_artifacts(s):
@@ -480,8 +484,9 @@ def _repair_artifacts(s):
     while prev != s:
         prev = s
         s = _COMMA_SPLIT_RE.sub(r"\1,\2", s)
-    for kw_re in _KW_SPLIT_RES:
-        s = kw_re.sub("outstanding", s)
+    for kw, regexes in _KW_SPLIT_RES:
+        for kw_re in regexes:
+            s = kw_re.sub(lambda m, w=kw: w.capitalize() if m.group(0)[0].isupper() else w, s)
     return s
 
 
@@ -604,27 +609,48 @@ def _grab_class_label(text, num_start, num_end):
     'shares of <CLASS>' construction (Apple/Alphabet); otherwise take the
     nearest 'Class X ...' or class keyword before the number (Amerant)."""
     post = text[num_end:num_end + 110]
-    # "N [outstanding] shares of [the registrant's] <CLASS>" — tolerates the
-    # split-word artifact "o f" and an intervening "outstanding"
-    m = re.match(r"[\s,]*(?:thousand|million|billion)?\s*(?:outstanding\s+)?shares?\s+o\s*f\s+"
+    # "N [(parenthetical)] [outstanding] shares of [the registrant's] <CLASS>" —
+    # tolerates the split-word artifact "o f" and an intervening "outstanding"
+    m = re.match(r"[\s,]*(?:\([^)]{0,60}\)\s*)?(?:thousand|million|billion)?\s*"
+                 r"(?:outstanding\s+)?shares?\s+o\s*f\s+"
                  r"(?:the\s+|its\s+|Alphabet'?s?\s+|registrant'?s?\s+)*"
                  r"(" + _CLASS_TAIL + r")", post, re.I)
     if m:
-        return re.sub(r"\s+", " ", m.group(1)).strip()
-    # "N <CLASS>" / "N of the registrant's <CLASS>" ("4,772 Class D shares",
-    # "1,758,476 of the registrant's Class A ordinary shares") — only when the
-    # tail carries an explicit Class/Series designator, so a bare "shares" here
-    # never shadows a better label before the number
-    m = re.match(r"[\s,]*(?:thousand|million|billion)?\s*"
-                 r"(?:o\s*f\s+(?:the\s+|its\s+|registrant'?s?\s+|company'?s?\s+|issuer'?s?\s+)+)?"
-                 r"(" + _CLASS_TAIL + r")", post, re.I)
-    if m and class_designator(m.group(1)):
         return re.sub(r"\s+", " ", m.group(1)).strip()
     pre = text[max(0, num_start - 110):num_start]
     pm = list(re.finditer(r"((?:Class|Series)\s+[A-Z0-9]{1,3}(?:-[A-Z0-9]{1,3})?\b[\w ]*?(?:Common\s+Stock|Common\s+Shares|"
                           r"Preferred\s+Stock|Stock|Shares)|Common\s+Stock|Common\s+Shares|Ordinary\s+Shares|"
                           r"Preferred\s+Stock|Preference\s+Shares|Capital\s+Stock|"
                           r"Redeemable\s+Capital\s+Shares|Limited\s+Voting\s+Shares)", pre, re.I))
+    # table-row layout: a STANDALONE class label right before the number (not
+    # attached to its own preceding count) is this number's label — "Class B
+    # Common Stock … (the "Class B Common Stock") 677,234 Class C Common Stock …"
+    # "Attached" = a count directly owns the phrase ("18,909,000 of the
+    # registrant's Class A …", "51,077,297 outstanding shares of common stock,
+    # consisting of …") — then the phrase belongs to THAT number, not this one.
+    # list layout: "… 4,772 Class D shares …", "1,758,476 of the registrant's
+    # Class A ordinary shares" — a designator-bearing label following the number
+    m2 = re.match(r"[\s,]*(?:\([^)]{0,60}\)\s*)?(?:thousand|million|billion)?\s*"
+                  r"(?:o\s*f\s+(?:the\s+|its\s+|registrant'?s?\s+|company'?s?\s+|issuer'?s?\s+)+)?"
+                  r"(" + _CLASS_TAIL + r")", post, re.I)
+    post_label = re.sub(r"\s+", " ", m2.group(1)).strip() \
+        if m2 and class_designator(m2.group(1)) else ""
+    if pm:
+        before = pre[max(0, pm[-1].start() - 44):pm[-1].start()]
+        attached = re.search(r"[\d,]{4,}\s*\)?\s*(?:(?:outstanding|issued)\s+)?(?:shares?\s+)?"
+                             r"(?:o\s*f\s+)?(?:the\s+|its\s+|registrant'?s?\s+)*$", before)
+        connective = re.search(r"(?:consisting\s+of|comprising|composed\s+of|"
+                               r"including|as\s+follows)\s*:?\s*$",
+                               pre[pm[-1].end():], re.I)
+        pre_label = re.sub(r"\s+", " ", pm[-1].group(0)).strip()
+        # a standalone pre label wins unless it is generic and a designator-
+        # bearing label follows the number (anchor preambles end in "… common
+        # stock as of the close of the period …" right before the real list)
+        if not attached and not connective and \
+           (class_designator(pre_label) or not post_label):
+            return pre_label
+    if post_label:
+        return post_label
     if pm:
         return re.sub(r"\s+", " ", pm[-1].group(0)).strip()
     # last resort: any class keyword in either direction
@@ -660,6 +686,7 @@ def extract_anchor(text, period=""):
         label-first : "Ordinary Shares ... : 1,228,504,232"  (SAP, Brookfield)
         number-first: "295,935,686 Common Shares 4,866,814 Series A Preferred ..."  (Emera, Cameco)
     `period` (CONFORMED PERIOD OF REPORT) is the as-of date when none is printed."""
+    text = _repair_artifacts(text)
     m = _ANCHOR_RE.search(text)
     if not m:
         return []
@@ -682,7 +709,7 @@ _LABEL_PHRASE_RE = re.compile(
     re.I,
 )
 _LABEL_AT_START_RE = re.compile(
-    r"^[\s,:]*(?:without\s+(?:nominal|par)\s+value[,:]?\s*)?"
+    r"^[\s,:]*(?:\([^)]{0,60}\)\s*)?(?:without\s+(?:nominal|par)\s+value[,:]?\s*)?"
     r"(?:thousand|million|billion)?\s*(?:shares?\s+of\s+(?:the\s+|its\s+|common\s+)*)?"
     r"(" + _LABEL_PHRASE_RE.pattern + r")",
     re.I,
@@ -703,8 +730,11 @@ def _extract_span_pairs(span, period):
     if not nums:
         return []
     label_first = bool(re.search(r"(?:shares?|stock|units)\b", span[:nums[0].start(1)], re.I))
-    entries = []
-    for i, nm in enumerate(nums):
+    # decide which numbers are real counts FIRST, so a skipped decoy (e.g. the
+    # "(post-reverse stock split adjusted to N)" parenthetical) never truncates
+    # the span a kept number reads its label from
+    kept = []
+    for nm in nums:
         if _looks_like_year(nm.group(1), nm.group(2)):
             continue
         ns, ne = nm.start(1), nm.end()
@@ -715,17 +745,26 @@ def _extract_span_pairs(span, period):
         val = _to_int(nm.group(1), nm.group(2))
         if val is None or val < PLAUSIBLE_MIN_SHARES:
             continue
-        next_start = nums[i + 1].start(1) if i + 1 < len(nums) else len(span)
-        label = ""
-        if label_first:
-            ms = list(_LABEL_PHRASE_RE.finditer(span[:ns]))
-            label = ms[-1].group(0) if ms else ""
-        else:
-            am = _LABEL_AT_START_RE.match(span[ne:next_start])
-            label = am.group(1) if am else ""
-        if not label:                                   # fall back to label-before
-            ms = list(_LABEL_PHRASE_RE.finditer(span[:ns]))
-            label = ms[-1].group(0) if ms else ""
+        kept.append((nm, val))
+    entries = []
+    for i, (nm, val) in enumerate(kept):
+        ns, ne = nm.start(1), nm.end()
+        next_start = kept[i + 1][0].start(1) if i + 1 < len(kept) else len(span)
+        ms = list(_LABEL_PHRASE_RE.finditer(span[:ns]))
+        pre_label = ms[-1].group(0) if ms else ""
+        am = _LABEL_AT_START_RE.match(span[ne:next_start])
+        post_label = am.group(1) if am else ""
+        label = pre_label if label_first else post_label
+        if not label:
+            label = post_label if label_first else pre_label
+        # whatever the orientation guess, an explicit Class/Series designator
+        # outranks a generic phrase — "… common stock as of the close of the
+        # period … 2,239,234,372 Class A ordinary shares and …" must bind
+        # "Class A", not the anchor sentence's own "common stock"
+        if not class_designator(label) and class_designator(post_label):
+            label = post_label
+        elif not class_designator(label) and class_designator(pre_label):
+            label = pre_label
         if not label and not re.search(r"shares?|stock|units", span[ne:next_start], re.I):
             continue
         label = _clean_label(label)

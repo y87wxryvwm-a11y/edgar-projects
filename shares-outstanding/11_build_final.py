@@ -5,11 +5,13 @@ Merges the sample, the relevance table (10-K corporate equity issuers vs
 ABS / units / debt-only / non-10-K forms), the extractor's output, and the
 golden-check verdict into one CSV:
 
-  - relevant filings: one row per share class — number, class label, type,
-    as-of date — plus the golden status (the extraction is shipped only because
-    it matches the adversarially-audited golden table).
+  - relevant filings: one row per share class — number, class designator
+    ("AX", "B", "" for an undesignated sole class), type, as-of date — plus
+    the golden status (the extraction is shipped only because it matches the
+    adversarially-audited golden table).
   - not-relevant filings: one row with relevant=False and the audited
     relevance category; share fields empty.
+  - filing_url: the EDGAR index page of the filing, for manual verification.
 
 Run after 2_extract.py and 8_check_golden.py.
 """
@@ -17,6 +19,8 @@ Run after 2_extract.py and 8_check_golden.py.
 import os
 import csv
 import json
+
+from shares_lib import class_designator
 
 # ---- EDIT THIS --------------------------------------------------------------
 YEAR = 2025
@@ -39,7 +43,12 @@ out_csv = os.path.join(directory, f"final_{YEAR}_n{SAMPLE_SIZE}.csv")
 FIELDS = ["accession", "cik", "company", "form", "date_filed",
           "relevant", "relevance_category", "relevance_source",
           "shares", "share_class", "share_type", "as_of_date",
-          "golden_status", "golden_source"]
+          "golden_status", "golden_source", "filing_url"]
+
+
+def index_url(cik, accession):
+    return (f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/"
+            f"{accession.replace('-', '')}/{accession}-index.html")
 
 
 def main():
@@ -63,7 +72,8 @@ def main():
                 "relevant": rel["relevant"], "relevance_category": rel["category"],
                 "relevance_source": rel["source"],
                 "golden_status": failing.get(acc, "PASS"),
-                "golden_source": golden.get(acc, {}).get("source", "")}
+                "golden_source": golden.get(acc, {}).get("source", ""),
+                "filing_url": index_url(s["cik"], acc)}
         if not rel["relevant"]:
             rows.append({**base, "shares": "", "share_class": "",
                          "share_type": "", "as_of_date": ""})
@@ -77,7 +87,7 @@ def main():
         for e in entries:
             n_classes += 1
             rows.append({**base, "shares": e.get("shares", ""),
-                         "share_class": e.get("class_label", ""),
+                         "share_class": class_designator(e.get("class_label", "")),
                          "share_type": e.get("share_type", ""),
                          "as_of_date": e.get("as_of_date", "")})
 
