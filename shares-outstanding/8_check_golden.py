@@ -29,6 +29,7 @@ directory = DATA_DIR.replace("\\", "/")
 val_jsonl = os.path.join(directory, f"validation_input_{YEAR}_n{SAMPLE_SIZE}.jsonl")
 golden_json = os.path.join(directory, f"golden_{YEAR}_n{SAMPLE_SIZE}.json")
 fail_json = os.path.join(directory, f"golden_failures_{YEAR}_n{SAMPLE_SIZE}.json")
+relevance_json = os.path.join(directory, f"relevance_{YEAR}_n{SAMPLE_SIZE}.json")
 
 EQUITY = {"common", "ordinary"}
 
@@ -90,6 +91,9 @@ def check(gold, ext_entries):
 
 def main():
     golden = json.load(open(golden_json, encoding="utf-8"))
+    relevance = {}
+    if os.path.exists(relevance_json):
+        relevance = json.load(open(relevance_json, encoding="utf-8"))
     claims = {}
     with open(val_jsonl, encoding="utf-8") as f:
         for ln in f:
@@ -97,6 +101,7 @@ def main():
             claims[r["accession"]] = r
 
     counts, fails = {}, []
+    rel_counts = {}
     for acc, gold in golden.items():
         claim = claims.get(acc)
         if claim is None:
@@ -106,8 +111,12 @@ def main():
         else:
             status, detail = check(gold, claim.get("script_entries", []))
         counts[status] = counts.get(status, 0) + 1
+        rel = relevance.get(acc, {})
+        if rel.get("relevant"):
+            rel_counts[status] = rel_counts.get(status, 0) + 1
         if status != "PASS":
             fails.append({"accession": acc, "form": claim.get("form", "") if claim else "",
+                          "relevance": rel.get("category", "UNKNOWN") if relevance else "",
                           "company": claim.get("company", "") if claim else "",
                           "status": status, "detail": detail,
                           "flags": ";".join(claim.get("flags", [])) if claim else "",
@@ -131,6 +140,13 @@ def main():
         import collections
         byform = collections.Counter(x["form"] for x in fails)
         print(f"  failures by form: {dict(byform)}")
+    if relevance:
+        rn = sum(1 for v in relevance.values() if v.get("relevant"))
+        rp = rel_counts.get("PASS", 0)
+        print(f"\n=== RELEVANT FILINGS ONLY (corporate 10-K equity issuers, n={rn}) ===")
+        for k in sorted(rel_counts, key=lambda x: -rel_counts[x]):
+            print(f"  {k:20} {rel_counts[k]:>5}")
+        print(f"  RELEVANT PASS RATE  {rp}/{rn}  ({rp/rn:.1%})" if rn else "  (none)")
     print(f"Wrote {fail_json}  ({len(fails)} failures)")
 
 
