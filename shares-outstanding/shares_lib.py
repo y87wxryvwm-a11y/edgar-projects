@@ -750,21 +750,43 @@ def _extract_span_pairs(span, period):
     for i, (nm, val) in enumerate(kept):
         ns, ne = nm.start(1), nm.end()
         next_start = kept[i + 1][0].start(1) if i + 1 < len(kept) else len(span)
-        ms = list(_LABEL_PHRASE_RE.finditer(span[:ns]))
+        # a par/nominal-value descriptor ("nominal value Ps.1.00 per share",
+        # "each share") matches the generic phrase tail but is never a class
+        # label — it must not shadow the real "Class B ordinary shares" phrase
+        # before it. A usable pre label needs a designator or a substantive
+        # class keyword.
+        ms = [m for m in _LABEL_PHRASE_RE.finditer(span[:ns])
+              if not re.search(r"(?:par|nominal)\s+value|per\s+share|each\s+share",
+                               m.group(0), re.I)
+              and (class_designator(m.group(0)) or
+                   re.search(r"ordinary|common|preferr|preference|capital|voting|"
+                             r"deferred|partnership|units?\b", m.group(0), re.I))]
         pre_label = ms[-1].group(0) if ms else ""
         am = _LABEL_AT_START_RE.match(span[ne:next_start])
         post_label = am.group(1) if am else ""
-        label = pre_label if label_first else post_label
-        if not label:
-            label = post_label if label_first else pre_label
-        # whatever the orientation guess, an explicit Class/Series designator
-        # outranks a generic phrase — "… common stock as of the close of the
-        # period … 2,239,234,372 Class A ordinary shares and …" must bind
-        # "Class A", not the anchor sentence's own "common stock"
-        if not class_designator(label) and class_designator(post_label):
-            label = post_label
-        elif not class_designator(label) and class_designator(pre_label):
-            label = pre_label
+        # one safe per-number override of the global orientation guess: a
+        # connective right before the number ("… Class A common shares and
+        # 23,664,925 …", "… and (ii) 148,500,000 Class C …") proves the pre
+        # phrase belongs to the PREVIOUS item — bind forward. Everything else
+        # follows the list orientation (a backward tail like "per share" is
+        # ambiguous: it ends a label-first row AND a number-first item's label).
+        tail = span[max(0, ns - 26):ns].lower()
+        if re.search(r"\b(?:and|was|were|had)\s*(?:\([ivx0-9]{1,4}\)\s*)?$", tail) \
+                and post_label:
+            label = post_label  # explicit adjacency binding — final
+        else:
+            label = pre_label if label_first else post_label
+            if not label:
+                label = post_label if label_first else pre_label
+            # only the orientation GUESS may be overridden: an explicit
+            # Class/Series designator outranks a generic phrase — "… common
+            # stock as of the close of the period … 2,239,234,372 Class A
+            # ordinary shares and …" must bind "Class A", not the anchor
+            # sentence's own "common stock"
+            if not class_designator(label) and class_designator(post_label):
+                label = post_label
+            elif not class_designator(label) and class_designator(pre_label):
+                label = pre_label
         if not label and not re.search(r"shares?|stock|units", span[ne:next_start], re.I):
             continue
         label = _clean_label(label)
@@ -926,23 +948,33 @@ def _skip_number_context(text, ns, ne):
     # "excluding / of which / representing / form of ..." ALWAYS marks a subset or a
     # re-expression of another count -> drop it, even when it names a class
     # ("excluding 277,628,320 Class A ordinary shares ... reserved for ADS issuance").
-    if re.search(r"\b(?:excludes|excluding|of which|representing|represented\s+by|reserved|"
-                 r"equivalent\s+to|adjusted\s+to|in\s+excess\s+of|(?:the\s+)?form\s+of)\b[\s(]*$", pre):
+    if re.search(r"\b(?:excludes|excluding|exclusive\s+of|of which|representing|represented\s+by|reserved|"
+                 r"equivalent\s+to|adjusted\s+to|in\s+excess\s+of|(?:the\s+)?form\s+of)\b"
+                 r"[\s()\divx.]{0,10}$", pre):
         return True
     # "excluding treasury shares of N", "excludes the market value of N" — the
     # qualifier may sit a few words before the number; a comma/paren/period ends
     # the exclusion clause so a real count after it is not swallowed
     if re.search(r"\bexclud(?:es|ing)\b[^.;,)]{0,55}$", text[max(0, ns - 70):ns], re.I):
         return True
+    # a number deep inside a still-open "(excluding … N …)" parenthetical is part
+    # of the exclusion, however long the clause runs
+    back = text[max(0, ns - 220):ns]
+    op = back.rfind("(")
+    if op != -1 and ")" not in back[op:] and \
+       re.search(r"\bexclud(?:ing|es)\b|\bexclusive\s+of\b", back[op:op + 30], re.I):
+        return True
     # "including N ..." / "(which includes N ...)" is a subset UNLESS N is itself a
     # named class component of the total that precedes it
     # ("...including 84,463,737 Class A ... and 45,787,948 Class B"). A class
-    # phrase qualified as tendered/reserved/unvested/... is still a subset.
+    # phrase qualified as tendered/reserved/unvested/... is still a subset — but a
+    # qualifier INSIDE a counting parenthetical ("Class A ... (excluding treasury
+    # shares ... reserved for future issuance)") belongs to the note, not the class.
     if re.search(r"\binclud(?:ing|es)\b[\s(]*$", pre) \
        and not (re.match(r"\s*[a-z'.&\- ]*?class\s+[a-z0-9]", post)
                 and not re.search(r"\b(?:tender|redeem|redempt|reserved|escrow|"
                                   r"forfeit|unvested|underlying|issuable)",
-                                  text[ne:ne + 90].lower())):
+                                  text[ne:ne + 90].split("(")[0].lower())):
         return True
     # "does not include N ..." explicitly marks the number as outside the count
     if re.search(r"\b(?:does\s+not|do\s+not|not)\s+includ(?:e|ed|ing)\b[^.;,]{0,30}$",
@@ -983,11 +1015,43 @@ def _skip_number_context(text, ns, ne):
         if cut:
             fwd = fwd[:cut.start()]
         low_fwd = fwd.lower()
-        if "respectively" in low_fwd and "issued" in low_fwd and "outstanding" in low_fwd:
+        back200 = text[max(0, ns - 200):ns].lower()
+        b = max(back200.rfind(". "), back200.rfind("\n"))
+        back_sent = back200[b + 1:] if b != -1 else back200
+        if "respectively" in low_fwd and \
+           (("issued" in low_fwd and "outstanding" in low_fwd) or
+            ("issued and outstanding" in back_sent)):
             return True
     if re.search(r"(?:retroactively|post-?reverse|after\s+giving\s+effect|"
                  r"as\s+adjusted|giving\s+retroactive)\b", pre):
         return True
+    # pro-forma / restatement qualifiers farther from the number: "After giving
+    # effect to the Business Combination … the issuer had N …", "(N1 and N2 …
+    # if retroactively adjusted to reflect the consolidation)", "(… following
+    # the 1-for-10 reverse share split)"
+    if re.search(r"\bafter\s+giving\s+effect\b|\bgiving\s+effect\s+to\b",
+                 text[max(0, ns - 160):ns], re.I):
+        return True
+    # … but only for a number INSIDE the restatement parenthetical ("(there
+    # were N1 … if retroactively adjusted …)"). A real count followed by such a
+    # parenthetical ("2,370,139 ordinary shares … (retroactively adjusted to
+    # reflect the consolidation)") IS the adjusted, correct count — keep it.
+    back240 = text[max(0, ns - 240):ns]
+    bcut = max(back240.rfind(". "), back240.rfind("\n"))
+    if bcut != -1:
+        back240 = back240[bcut + 1:]
+    if back240.count("(") > back240.count(")"):
+        fwd300 = text[ne:ne + 300]
+        cut = re.search(r"(?<!\d)\.(?=\s)|\n", fwd300)
+        if cut:
+            fwd300 = fwd300[:cut.start()]
+        if re.search(r"\bif\s+retroactively\s+adjusted\b|\bretroactively\s+adjusted\s+to\s+reflect\b|"
+                     r"following\s+(?:the\s+)?\S{1,12}\s+reverse\s+(?:share|stock)\s+split\s*\)|"
+                     r"\b(?:adjusted|consolidat|split)\w*\b",
+                     fwd300, re.I) and \
+           re.search(r"\bretroactiv|\breverse\b|\bconsolidat|\bsplit\b|\badjusted\b",
+                     fwd300, re.I):
+            return True
     # any number sitting inside an "of which ..." sub-clause (same sentence) is a
     # breakdown of the count before it, not a separate class -> drop it. A "." or a
     # ")" between the "of which" and the number ends the sub-clause (e.g. a real
@@ -999,14 +1063,28 @@ def _skip_number_context(text, ns, ne):
             return True
 
     # grand total immediately broken into its component classes -> keep components, drop total.
-    # The "consisting of"/"comprising"/"sum of" connective marks a redundant total; a bare
-    # "an aggregate of N shares ... outstanding" is just a normal single count -> keep it.
-    if re.match(r"[\s,]*[a-z()$.,&'/\-\s]{0,50}?\b(?:consisting\s+of|comprised\s+of|comprising|"
-                r"composed\s+of|being\s+the\s+sum\s+of|made\s+up\s+of|the\s+sum\s+of)\b", post):
+    # The connective ("consisting of"/"being the sum of"/"with A Class A and B
+    # Class B"…) may sit past a long class descriptor and par-value clause, so
+    # scan the rest of the number's own sentence (decimal points in par values
+    # are not sentence ends). Require an actual large component count after the
+    # connective: "B Units, each consisting of five Series B Shares" describes
+    # unit COMPOSITION, not a redundant total.
+    fwd_tot = text[ne:ne + 175]
+    cut = re.search(r"(?<!\d)\.(?=\s)|\n", fwd_tot)
+    if cut:
+        fwd_tot = fwd_tot[:cut.start()]
+    m_conn = re.search(r"\b(?:consisting\s+of|comprised\s+of|comprising|composed\s+of|"
+                       r"being\s+the\s+sum\s+of|made\s+up\s+of|the\s+sum\s+of|"
+                       r"divided\s+into|"
+                       r"(?<!each )with(?!\s+(?:a\s+|no\s+)?(?:par|nominal)\b))\b",
+                       fwd_tot, re.I)
+    if m_conn and re.search(r"(?<![\d.$])(?:\d{1,3}(?:,\d{3})+|\d{5,})",
+                            text[ne + m_conn.end():ne + m_conn.end() + 90]):
         return True
     # "X shares, including A Class A ... and B Class B" -> X is the total, drop it
-    if re.match(r"[\s,]*[a-z()$.,&'/\-\s]{0,45}?\bincluding\s+\d[\d,. ]*\s*"
-                r"(?:thousand|million|billion)?\s*[a-z'.&\- ]*?class\s+[a-z0-9]", post):
+    if re.search(r"^[^;]{0,90}?\bincluding\s+\d[\d,. ]*\s*"
+                 r"(?:thousand|million|billion)?\s*[a-z'.&\- ]*?class\s+[a-z0-9]",
+                 fwd_tot, re.I):
         return True
 
     # 'X [shares of the registrant's common stock] issued and Y outstanding' ->
@@ -1017,17 +1095,37 @@ def _skip_number_context(text, ns, ne):
        not re.search(r"\bissued,?\s+and\s+outstanding", post80):
         return True
 
-    # treasury
+    # treasury ("N shares held in treasury", "N recorded as treasury stock")
     if re.match(r"\s*(?:class\s+[a-z]\s+)?(?:ordinary\s+|common\s+)?shares?\s+held\s+in\s+treasury", post):
         return True
-    if re.match(r"\s+(?:were\s+)?treasury\b", post) or "in treasury" in post[:34]:
+    if re.match(r"\s+(?:were\s+)?treasury\b", post) or "in treasury" in post[:34] or \
+       (re.search(r"\btreasury\s+(?:stock|shares?)\b", post[:40]) and
+        not re.search(r"\b(?:net\s+of|excluding|exclusive\s+of|less)\b[^.;]{0,20}treasury",
+                      post[:40])):
         return True
 
-    # warrants / options to purchase are never the outstanding share count
-    # (kept tight at ±30: 20-F covers list "Warrants" as a registered-class line
-    # right next to the share count; the "issuable" guard above handles the
-    # trailing "issuable upon exercise of warrants" clause)
-    if re.search(r"\bwarrants?\b|\boptions?\s+to\s+purchase\b", text[max(0, ns - 30):ne + 30].lower()):
+    # a "Total" table-row label right before the number is an arithmetic sum row
+    if re.search(r"\b(?:sub)?total\s*:?\s*$", text[max(0, ns - 14):ns], re.I):
+        return True
+
+    # "N per share" is a par value or price, never a count ("par value ￦ 5,000
+    # per share" — non-USD currency symbols escape the $ guard)
+    if re.match(r"\s*per\s+share\b", post):
+        return True
+
+    # warrants / options to purchase are never the outstanding share count.
+    # Backward: reach a "Warrants to purchase …: N" row label, but never cross
+    # into the PREVIOUS row/sentence (a "Warrants" line above a real share row
+    # must not kill it). Forward: "N warrants outstanding/to purchase" is a
+    # warrant count, but "N Warrants 14,391,150" is the NEXT row's label-first
+    # pair — the digit after the warrant word marks that case.
+    pre_row = text[max(0, ns - 90):ns]
+    b = max(pre_row.rfind("\n"), pre_row.rfind(". "))
+    if b != -1:
+        pre_row = pre_row[b + 1:]
+    if re.search(r"\bwarrants?\b|\boptions?\s+to\s+purchase\b", pre_row.lower()):
+        return True
+    if re.match(r"\s*(?:[a-z'.&\- ]{0,20})?warrants?\b(?!\s*[\d(])", post):
         return True
 
     # share repurchase / buyback / tender mentions ("accepted for purchase a total of
