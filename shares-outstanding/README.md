@@ -31,6 +31,15 @@ sample size there, then run.
 | `1_build_index_and_sample.py` | Downloads the four quarterly EDGAR full-index files for the year (cached), writes the full annual-filing index, and draws the stratified random sample. |
 | `2_extract.py` | Downloads each sampled filing's primary document, extracts (shares, class, date) per class, cross-checks the XBRL `dei` fact, and writes the results CSV + per-filing validation input with confidence and flags. |
 | `3_dump_evidence.py` | Writes a neutral evidence packet per filing (cover text + every "outstanding" context + the SEC structured fact) — the input for independent validation. |
+| `4_…`–`8_…` | The adversarial audit + golden-table loop (see `progress.md`): batch the evidence, reconcile blind agent verdicts, adjudicate disagreements, build the golden truth table, score the extractor against it. |
+| `9_build_relevance_batches.py` | Dumps every sampled 10-K cover (offline, from cache) and batches them for the relevance classification agents. |
+| `10_reconcile_relevance.py` | Reconciles the two blind relevance passes, batches disagreements for adjudication, writes `relevance_*.json` — 20-F/40-F are NOT_RELEVANT_FORM by rule; 10-Ks are RELEVANT or NOT_RELEVANT_ABS / _UNITS / _DEBT_ONLY. |
+| `11_build_final.py` | Merges sample + relevance + extraction + golden status into the final study CSV (`final_*.csv`). |
+
+The study's relevant universe is corporate 10-K registrants with public equity
+shares; ABS issuers, unit-denominated non-corporate registrants (MLPs, fund
+LPs/LLCs, ETF trusts), debt-only issuers, and the 20-F / 40-F forms are marked
+not relevant rather than extracted.
 
 `shares_lib.py` is the engine imported by all three. `validate_helper.py` builds
 one evidence packet (used by `3_dump_evidence.py` and runnable standalone:
