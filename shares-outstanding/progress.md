@@ -44,8 +44,12 @@ one row with the category for not-relevant ones).
 4. **Final dataset** — `11_build_final.py` merges sample + relevance +
    extraction + golden status.
 5. **Final confirmation** — fresh blind audit (separate agents, evidence
-   packets) over the 46 changed extractions + 60 randomly re-sampled relevant
-   passes; results land in `DATA_DIR/audit/confirm/`.
+   packets) of the 46 changed extractions + 60 randomly re-sampled relevant
+   passes: 100/106 direct agreement; the 6 disagreements were adjudicated
+   against the full cover and **all resolved for the shipped extraction**
+   (auditor misreads: footnote preferred counts, pre-split figures, float
+   numbers; one cover-page-standard call on Bit Digital's note-only preferred).
+   Golden table unchanged. Artifacts in `DATA_DIR/audit/confirm/`.
 
 ## Agent-cost rule (hard)
 
