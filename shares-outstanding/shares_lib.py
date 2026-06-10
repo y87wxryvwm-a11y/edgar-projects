@@ -672,9 +672,20 @@ def _grab_class_label(text, num_start, num_end):
 # Whitespace-flexible: foreign-issuer covers break this phrase across newlines,
 # so every gap is \s+ rather than a literal space.
 _ANCHOR_RE = re.compile(
-    r"number\s+of\s+outstanding\s+shares\s+of\s+each\s+of\s+the\s+issuer'?s?\s+"
-    r"classes\s+of\s+(?:capital\s+or\s+common|capital|common)\s+stock\s+as\s+of"
+    # variants seen in the corpus: "each of" omitted (some 40-Fs), "as at"
+    # (Commonwealth English), "issuer ' s" (tag-boundary artifact), "classes of
+    # capital or common shares"
+    r"number\s+of\s+outstanding\s+shares\s+of\s+(?:each\s+of\s+)?the\s+issuer\s*'?\s*s?\s+"
+    r"classes\s+of\s+(?:capital\s+or\s+common|capital|common)\s+(?:stock|shares)\s+as\s+(?:of|at)"
     r"[^:.]{0,200}?[:.]",  # newlines allowed: the date/colon often sits on the next line
+    re.I,
+)
+
+# the "issued" phrasing some foreign covers use instead of the regulatory line:
+# "The total number of issued shares of each class of stock … as of … was:"
+_ANCHOR_ISSUED_RE = re.compile(
+    r"(?:total\s+)?number\s+of\s+(?:issued|outstanding)\s+shares\s+of\s+each\s+class\s+of\s+"
+    r"(?:capital\s+stock|stock|shares)\b[^:.]{0,200}?[:.]",
     re.I,
 )
 
@@ -687,9 +698,15 @@ def extract_anchor(text, period=""):
         number-first: "295,935,686 Common Shares 4,866,814 Series A Preferred ..."  (Emera, Cameco)
     `period` (CONFORMED PERIOD OF REPORT) is the as-of date when none is printed."""
     text = _repair_artifacts(text)
-    m = _ANCHOR_RE.search(text)
+    m = _ANCHOR_RE.search(text) or _ANCHOR_ISSUED_RE.search(text)
     if not m:
         return []
+    # the regulatory phrase often carries the authoritative as-of date itself
+    # ("… as of January 28, 2025 was:") — that date, not the fiscal close,
+    # is the fallback for entries with no inline date
+    anchor_dates = _DATE_RE.findall(m.group(0))
+    if anchor_dates:
+        period = iso_date(anchor_dates[-1]) or period
     start = m.end()
     stop = re.search(r"Indicate by check mark|\bIf this report\b", text[start:start + 2000], re.I)
     span = text[start: start + (stop.start() if stop else 1600)]
@@ -738,12 +755,21 @@ def _extract_span_pairs(span, period):
         if _looks_like_year(nm.group(1), nm.group(2)):
             continue
         ns, ne = nm.start(1), nm.end()
-        if "$" in span[max(0, ns - 5):ns] or "%" in span[ne:ne + 3]:
+        # % only when glued to the digits — "8,331,144,875 11% cumulative
+        # preference shares" is a count followed by a dividend-rate label
+        if "$" in span[max(0, ns - 5):ns] or "%" in span[nm.end(1):nm.end(1) + 1]:
+            continue
+        # a bare decimal with no scale word is a par value ("£1.00 each",
+        # "NIS 1.0"), never a count; "45.0 million" keeps its scale word
+        if "." in nm.group(1) and not nm.group(2):
             continue
         if _skip_number_context(span, ns, ne):
             continue
         val = _to_int(nm.group(1), nm.group(2))
-        if val is None or val < PLAUSIBLE_MIN_SHARES:
+        # no magnitude floor in the anchor span: it is a tightly bounded
+        # regulatory listing where tiny real classes occur ("480 Class B
+        # ordinary shares", "100 common shares"); decoys are guarded above
+        if val is None or val < 1:
             continue
         kept.append((nm, val))
     entries = []
@@ -791,11 +817,41 @@ def _extract_span_pairs(span, period):
             continue
         label = _clean_label(label)
         raw_date = _nearest_date(span, ne, window=140)
+        ad = iso_date(raw_date) or period
+        # a LATER-than-period count inside a parenthetical ("(79,482,768 as of
+        # the date of this report)") or a "subsequent to …" sentence is a
+        # supplemental update, not the regulatory period-close answer
+        if period and ad and ad > period:
+            back = span[max(0, ns - 240):ns]
+            b = max(back.rfind(". "), back.rfind("\n"))
+            if b != -1:
+                back = back[b + 1:]
+            if back.count("(") > back.count(")") or re.search(r"\bsubsequent\b", back, re.I):
+                continue
         entries.append(ClassEntry(
             shares=val, raw_number=nm.group(1), scale=(nm.group(2) or "").lower(),
             class_label=label, share_type=classify_share_type(label),
-            as_of_date=iso_date(raw_date) or period, raw_date=raw_date or period,
+            as_of_date=ad, raw_date=raw_date or period,
             matched_text=re.sub(r"\s+", " ", span[max(0, ns - 15):ne + 45]).strip(),
+        ))
+    # 1-2 digit and spelled-out tiny class counts never enter _NUM_RE ("12 Class
+    # A Multiple Voting Shares", "2 series C shares", "one special share") —
+    # pick them up only when tied to an explicit class noun
+    for sm in re.finditer(
+            r"(?<![\d,.$-])\b(\d{1,2}|one)\s+"
+            r"((?:Class|Series)\s+[\"']?[A-Z0-9]{1,3}[\"']?\s+)?"
+            r"((?:[A-Za-z]+\s+){0,3}?shares?)\b", span):
+        if not sm.group(2) and not re.search(r"\bspecial\b", sm.group(3), re.I):
+            continue
+        raw = sm.group(1)
+        val = 1 if raw == "one" else int(raw)
+        label = _clean_label(((sm.group(2) or "") + sm.group(3)).strip())
+        raw_date = _nearest_date(span, sm.end(), window=140)
+        entries.append(ClassEntry(
+            shares=val, raw_number=raw, scale="",
+            class_label=label, share_type=classify_share_type(label),
+            as_of_date=iso_date(raw_date) or period, raw_date=raw_date or period,
+            matched_text=re.sub(r"\s+", " ", span[max(0, sm.start() - 40):sm.end() + 40]).strip(),
         ))
     return _dedupe(entries)
 
@@ -986,6 +1042,10 @@ def _skip_number_context(text, ns, ne):
         return True
     # the denominator of a split ratio ("1-for-4,000 reverse stock split")
     if re.search(r"\d\s*-\s*for\s*-\s*$", text[max(0, ns - 12):ns], re.I):
+        return True
+    # regulatory citations ("Rule 405 of the Securities Act", "§ 232.405",
+    # "Section 13") are never counts
+    if re.search(r"(?:\brule|\bsection|\bitem|\bform|§)\s*$", text[max(0, ns - 10):ns], re.I):
         return True
     # market-value computation figures: "based on N shares", "N shares at $X per
     # share", "N at a closing price of $X" — float math, not the cover count
@@ -1383,6 +1443,13 @@ def process_filing(session, filing, do_xbrl=True):
             for e in entries:
                 if not e.as_of_date:
                     e.as_of_date = period
+            # multi-year 20-Fs list historical year-end counts beside the
+            # current one: when a share type has its period-close count, the
+            # older-dated rows of that type are history, not extra classes
+            have_period = {e.share_type for e in entries if e.as_of_date == period}
+            entries = [e for e in entries
+                       if not (e.share_type in have_period and e.as_of_date
+                               and e.as_of_date < period)]
         # 10-K: drop narrative decoys (merger/reverse-split share counts deep in an
         # over-long cover) — keep only counts dated within ~1 year of the filing,
         # provided at least one such recent count exists.
