@@ -118,7 +118,7 @@ def _decoy(text, start, end):
     is a documented trap observed across many filings, not a one-off fix."""
     pre = text[max(0, start - 80):start]
     post = text[end:end + 80]
-    if re.search(r"[\$£€¥]\s*\(?\s*$", pre):
+    if re.search(r"[\$£€¥₩₹]\s*\(?\s*$", pre):
         return "DOLLAR"                      # market/par value, any currency
     if re.search(r"(?i)\bweighted[\s-]+average\b", pre):
         return "WEIGHTED"                    # EPS share counts
@@ -148,9 +148,15 @@ def _decoy(text, start, end):
     # — but "TOTAL, including N Class A ... and M Class B ..." introduces the
     # per-class breakdown we want; a Class/Series-led phrase stays a candidate
     if re.search(r"(?i)\b(?:includ(?:ing|es)|exclud(?:ing|es)|exclusive\s+of|"
-                 r"after\s+deducting|net\s+of)\s*$", pre) and not \
-            re.match(r"(?i)\s*(?:class|series)\s+[a-z0-9]", post):
+                 r"after\s+deducting|net\s+of|does\s+not\s+include)\s*$", pre) \
+            and not re.match(r"(?i)\s*(?:class|series)\s+[a-z0-9]", post):
         return "SUBSET"
+    # "75,000,000 shares issued and 60,000,000 shares outstanding" — the
+    # issued figure is capacity history, not the count; the fused phrase
+    # "issued and outstanding" (no second number) stays untouched
+    if re.match(r"(?i)\s*(?:shares?\s+)?(?:were\s+)?issued[,;]?\s+and\s+[\d,]+",
+                post):
+        return "ISSUED_SPLIT"
     # derivative counts ("4,018,384 Warrants to purchase ...") — but only
     # when the derivative word is what the number binds to; "59,888,304
     # common shares and 53,900,329 warrants" must keep the share count
@@ -165,11 +171,19 @@ def _decoy(text, start, end):
         return "FILE_NUMBER"
     # ownership breakdowns ("19,222,141 held by the ESOP and ...") and
     # carve-outs the cover itself excludes from the outstanding count
-    if re.match(r"(?i)\s*(?:shares?\s+)?(?:of\s+which\s+)?(?:are\s+|were\s+)?"
-                r"held\s+(?:by|as|in)\b", post) and not \
-            re.match(r"(?i)\s*(?:shares?\s+)?(?:are\s+|were\s+)?held\s+by\s+non",
-                     post):
+    if re.match(r"(?i)\s*(?:[\w']+\s+){0,3}held\s+(?:directly\s+|indirectly\s+)?"
+                r"(?:by|as|in)\b", post) and not \
+            re.match(r"(?i)\s*(?:[\w']+\s+){0,3}held\s+(?:directly\s+)?by\s+non",
+                     post) and not \
+            re.search(r"(?i)\boutstanding\b", post[:40]):
         return "HELD_BY_BREAKDOWN"
+    if re.search(r"(?i)\b(?:also\s+)?holds?\s*$", pre):
+        return "HELD_BY_BREAKDOWN"           # "... also hold N units in a sub"
+    if re.match(r"(?i)\s*(?:[\w']+\s+){0,2}at\s+a\s+closing\s+price\b", post):
+        return "MV_BASIS"                    # "(N shares at a closing price of $...)"
+    if re.search(r"(?i)\bauditor\s+firm\s+id\s*:?\s*$", pre) or \
+            re.match(r"(?i)\s*auditor\s+name", post):
+        return "AUDITOR_ID"                  # the PCAOB firm ID under the count
     if re.search(r"(?i)\breserved\s+for\b", post[:60]) or \
             re.search(r"(?i)^\s*(?:shares?\s+)?(?:repurchased|reserved)\b", post):
         return "RESERVED"
@@ -668,8 +682,31 @@ _FPI_ANCHOR_FALLBACK_RE = re.compile(
 _NEXT_ITEM_RE = re.compile(r"(?i)indicate\s+by\s+check\s+mark")
 
 
+def _drop_non_period_fpi(rows, period_iso):
+    """20-F/40-F counts are required as of the period close. When the cover
+    also prints a filing-date count of the same class, the period-close row
+    is the regulatory one — drop the other (mirror image of the 10-K
+    latest-practicable-date rule)."""
+    if not period_iso:
+        return rows
+    by_class = {}
+    for r in rows:
+        by_class.setdefault((r["share_type"], r["class_designator"]), []).append(r)
+    keep = []
+    for grp in by_class.values():
+        dates = {r["as_of"] for r in grp if r["as_of"]}
+        if len(dates) >= 2 and period_iso in dates:
+            grp = [r for r in grp if not r["as_of"] or r["as_of"] == period_iso]
+        keep.extend(grp)
+    return sorted(keep, key=lambda r: r["pos"])
+
+
 def _extract_fpi(text, period_of_report):
     flags = []
+    period_iso = ""
+    if re.fullmatch(r"\d{8}", period_of_report or ""):
+        period_iso = "%s-%s-%s" % (period_of_report[:4], period_of_report[4:6],
+                                   period_of_report[6:8])
     head = text[:60000]
     am = _FPI_ANCHOR_RE.search(head)
     method = "FPI_ANCHOR"
@@ -698,6 +735,7 @@ def _extract_fpi(text, period_of_report):
             r["flags"].append("FPI_FREEFORM")
             if not r["as_of"]:
                 r["flags"].append("NO_DATE")
+        rows = _drop_non_period_fpi(rows, period_iso)
         if not rows:
             flags.append("NO_MATCH")
         if len(rows) > 1:
