@@ -436,7 +436,7 @@ _MONTHS = ("January|February|March|April|May|June|July|August|September|"
            "October|November|December")
 _DATE_RE = re.compile(
     rf"\b(?:{_MONTHS})\s+\d{{1,2}}\s*,?\s+\d{{4}}\b"
-    rf"|\b\d{{1,2}}\s+(?:{_MONTHS})\s+\d{{4}}\b"
+    rf"|\b\d{{1,2}}\s+(?:{_MONTHS})\s*,?\s+\d{{4}}\b"
     rf"|\b\d{{4}}-\d{{2}}-\d{{2}}\b"
     rf"|\b(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])/(?:19|20)\d{{2}}\b",
     re.I,
@@ -512,7 +512,7 @@ def iso_date(raw):
     if m:
         mo = _MONTH_NUM[m.group(1).lower()]
         return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(2)):02d}"
-    m = re.match(rf"(\d{{1,2}})\s+({_MONTHS})\s+(\d{{4}})", raw, re.I)
+    m = re.match(rf"(\d{{1,2}})\s+({_MONTHS})\s*,?\s+(\d{{4}})", raw, re.I)
     if m:
         mo = _MONTH_NUM[m.group(2).lower()]
         return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(1)):02d}"
@@ -526,9 +526,9 @@ def class_designator(label):
     """The bare class/series designator: "Class AX common stock" -> "AX",
     "Series A Preferred Stock" -> "A", "Class I-S" -> "I-S"; "" when the label
     names no class."""
-    m = re.search(r"\b(?:class|series)\s+(?!of\b|no\b)([a-z0-9]{1,3}(?:-[a-z0-9]{1,3})?)\b",
-                  (label or "").lower())
-    return m.group(1).upper() if m else ""
+    ms = re.findall(r"\b(?:class|series)\s+(?!of\b|no\b)[\"']?([a-z0-9]{1,3}(?:-[a-z0-9]{1,3})?)[\"']?(?=[\s,.;:)]|$)",
+                    (label or "").lower())
+    return ms[-1].upper() if ms else ""
 
 
 def classify_share_type(label):
@@ -539,6 +539,8 @@ def classify_share_type(label):
         return "depositary"
     # units of beneficial interest / LP / trust units are not common stock
     if "unit" in low:
+        return "other"
+    if "investment share" in low or re.search(r"\bspecial\s+shares?\b", low):
         return "other"
     if "ordinary" in low:
         return "ordinary"
@@ -586,6 +588,9 @@ def _nearest_date(text, pos, window=260):
         # is not a market-value signal: no penalty for those
         pre36 = span[max(0, m.start() - 36):m.start()]
         seg = pre36.split("$")[-1] if "$" in pre36 else None
+        if re.search(r"\b(?:effected\s+on|effective(?:\s+as\s+of)?(?:\s+on)?)\s*$",
+                     re.sub(r"\s+", " ", span[max(0, m.start() - 26):m.start()]), re.I):
+            continue  # "consolidation effected on <date>" — a corporate-action date
         if (seg is not None and not re.search(r"[.;:]\s|\n", seg)
                 and not re.match(r"\s?0?\.\d", seg)) or \
            re.match(r"\s*,?\s*(?:\([^)]{0,14}\)\s*)?(?:the\s+last\s+business\s+day\b|"
@@ -676,7 +681,7 @@ _ANCHOR_RE = re.compile(
     # (Commonwealth English), "issuer ' s" (tag-boundary artifact), "classes of
     # capital or common shares"
     r"number\s+of\s+outstanding\s+shares\s+of\s+(?:each\s+of\s+)?the\s+issuer\s*'?\s*s?\s+"
-    r"classes\s+of\s+(?:capital\s+or\s+common|capital|common)\s+(?:stock|shares)\s+as\s+(?:of|at)"
+    r"classes\s+of\s+(?:capital\s+stock\s+or\s+common|capital\s+or\s+common|capital|common)\s+(?:stock|shares)\s+as\s+(?:of|at)"
     r"[^:.]{0,200}?[:.]",  # newlines allowed: the date/colon often sits on the next line
     re.I,
 )
@@ -690,7 +695,7 @@ _ANCHOR_ISSUED_RE = re.compile(
 )
 
 
-def extract_anchor(text, period=""):
+def extract_anchor(text, period="", date_filed=""):
     """For 20-F/40-F: find the fixed regulatory phrase, then read the class/number
     pairs that follow it until the next cover checkbox instruction. Handles both
     list shapes seen in practice:
@@ -710,24 +715,67 @@ def extract_anchor(text, period=""):
     start = m.end()
     stop = re.search(r"Indicate by check mark|\bIf this report\b", text[start:start + 2000], re.I)
     span = text[start: start + (stop.start() if stop else 1600)]
-    return _extract_span_pairs(_despace_numbers(span), period)
+    entries = _extract_span_pairs(_despace_numbers(span), period, date_filed)
+    # a bare-designator listing label ('Series "D" Shares') is often defined
+    # with its full class name in the 12(b) registered-securities table above
+    # the anchor ('Dividend Preferred Shares, without par value ("Series "D"
+    # Shares")') — the definition carries the share type the listing omits
+    for en in entries:
+        desig = class_designator(en.class_label)
+        if desig and en.share_type in ("common", "ordinary") and \
+                re.fullmatch(r"(?:series|class)\s+[\"']?[a-z0-9-]{1,3}[\"']?\s+shares?",
+                             en.class_label, re.I):
+            for dm in re.finditer(
+                    r"\(\s*[\"'](?:the\s+)?(?:series|class)\s+[\"']?" + re.escape(desig) +
+                    r"[\"']?\s+shares?\s*[\"']\s*\)", text[:m.start()], re.I):
+                head = text[max(0, dm.start() - 80):dm.start()]
+                fm = re.search(r"([A-Z][\w&'.-]*(?:\s+[\w&'.-]+){0,4}\s+(?:Shares?|Stock))"
+                               r"\s*(?:,[^()]{0,40})?$", head)
+                if fm:
+                    t = classify_share_type(fm.group(1))
+                    if t in ("preferred", "depositary", "other"):
+                        en.share_type = t
+                    break
+    # an entry pinned to "the date of this report" — the sentinel, not an
+    # explicit printed date — defers to an explicit dated statement of the
+    # SAME count elsewhere on the cover ("As of March 31, 2025, there were
+    # 26,400,000 ordinary shares" in the 15(d) section). A match inside the
+    # anchor listing itself never counts (a date there belongs to a sibling
+    # count in the same sentence), and an entry whose own raw_date already
+    # reads date_filed printed the filing date explicitly — keep it.
+    if date_filed:
+        for en in entries:
+            if en.as_of_date == date_filed and en.raw_number \
+                    and iso_date(en.raw_date) != en.as_of_date:
+                for dm in re.finditer(r"as\s+(?:of|at)\s+(" + _DATE_RE.pattern + r")[^.;]{0,80}?" +
+                                      re.escape(en.raw_number), text, re.I):
+                    if start <= dm.start() < start + len(span):
+                        continue
+                    en.as_of_date = iso_date(dm.group(1)) or en.as_of_date
+                    break
+    return entries
 
 
 # A class label = up to ~5 words ending in a class noun, optional Series suffix.
 # Case-insensitive so foreign filers' lowercase "ordinary shares" is captured too.
 _LABEL_PHRASE_RE = re.compile(
-    r"(?:[A-Za-z][\w.&'/-]*\s+){0,5}?"
+    r"(?:(?:[A-Za-z][\w.&'/-]*|\"[A-Za-z0-9]{1,3}\"|'[A-Za-z0-9]{1,3}'|\d{1,2}(?:\.\d+)?%)\s+){0,7}?"
     r"(?:ordinary\s+shares?|common\s+shares?|common\s+stock|preferred\s+stock|"
     r"preference\s+shares?|preferred\s+shares?|capital\s+stock|"
-    r"redeemable\s+capital\s+shares?|limited\s+voting\s+shares?|"
+    # comma-list voting class names ("Subordinate, Restricted and Limited
+    # Voting Shares") — the comma form only, so plain labels bind unchanged
+    r"redeemable\s+capital\s+shares?|"
+    r"(?:[a-z]+,\s+)+(?:[a-z]+\s+and\s+)?(?:limited|subordinate|multiple)\s+voting\s+shares?|"
+    r"limited\s+voting\s+shares?|"
     r"subordinate\s+voting\s+shares?|partnership\s+common\s+units?|"
     r"general\s+partner\s+units?|common\s+units?|deferred\s+shares?|"
-    r"shares?|stock|units)(?:,?\s+series\s+[A-Za-z0-9-]+)?",
+    r"shares?|stock|units|CPOs?|ADSs?|ADRs?|GDRs?|BDRs?)(?:,?\s+(?:series|class)\s+[\"']?[A-Za-z0-9-]{1,3}[\"']?)?",
     re.I,
 )
 _LABEL_AT_START_RE = re.compile(
-    r"^[\s,:]*(?:\([^)]{0,60}\)\s*)?(?:without\s+(?:nominal|par)\s+value[,:]?\s*)?"
-    r"(?:thousand|million|billion)?\s*(?:shares?\s+of\s+(?:the\s+|its\s+|common\s+)*)?"
+    r"^(?:\.\d+\s*)?[\s,:]*(?:\([^)]{0,60}\)\s*)?(?:without\s+(?:nominal|par)\s+value[,:]?\s*)?"
+    r"(?:thousand|million|billion)?\s*"
+    r"(?:shares?\s+of\s+(?:the\s+|its\s+|common\s+|registrant'?s?\s+|company'?s?\s+|issuer'?s?\s+)*)?"
     r"(" + _LABEL_PHRASE_RE.pattern + r")",
     re.I,
 )
@@ -737,7 +785,7 @@ def _clean_label(s):
     return re.sub(r"\s+", " ", s).strip(" ,.:")
 
 
-def _extract_span_pairs(span, period):
+def _extract_span_pairs(span, period, date_filed=""):
     """Walk every share-count number in the anchor listing and bind a class label.
     Decide the list orientation once: if a class noun appears before the first
     number it is label-first (SAP / Brookfield / CIBC) and each number takes the
@@ -786,7 +834,7 @@ def _extract_span_pairs(span, period):
                                m.group(0), re.I)
               and (class_designator(m.group(0)) or
                    re.search(r"ordinary|common|preferr|preference|capital|voting|"
-                             r"deferred|partnership|units?\b", m.group(0), re.I))]
+                             r"deferred|partnership|investment|units?\b", m.group(0), re.I))]
         pre_label = ms[-1].group(0) if ms else ""
         am = _LABEL_AT_START_RE.match(span[ne:next_start])
         post_label = am.group(1) if am else ""
@@ -797,9 +845,22 @@ def _extract_span_pairs(span, period):
         # follows the list orientation (a backward tail like "per share" is
         # ambiguous: it ends a label-first row AND a number-first item's label).
         tail = span[max(0, ns - 26):ns].lower()
+        pre_attached = False
+        if ms:
+            pstart = span[:ns].rfind(ms[-1].group(0))
+            between = span[pstart + len(ms[-1].group(0)):ns]
+            # the phrase belongs to the PREVIOUS sentence's number only when a
+            # sentence boundary separates it from this number ("… 4,117,952,894
+            # Series D-L Shares. 1,417,048,500 B Units …"); inside one table row
+            # ("Class B shares 7,624") it is this number's own label
+            if pstart > 0 and re.search(r"[\d,]{4,}[\s)]*$", span[max(0, pstart - 16):pstart]) \
+                    and re.search(r"(?<!\d)\.\s", between):
+                pre_attached = True
         if re.search(r"\b(?:and|was|were|had)\s*(?:\([ivx0-9]{1,4}\)\s*)?$", tail) \
                 and post_label:
             label = post_label  # explicit adjacency binding — final
+        elif pre_attached and post_label:
+            label = post_label  # the pre phrase is the PREVIOUS number's label
         else:
             label = pre_label if label_first else post_label
             if not label:
@@ -809,15 +870,55 @@ def _extract_span_pairs(span, period):
             # stock as of the close of the period … 2,239,234,372 Class A
             # ordinary shares and …" must bind "Class A", not the anchor
             # sentence's own "common stock"
-            if not class_designator(label) and class_designator(post_label):
+            pre_far = not ms or (ns - (span[:ns].rfind(ms[-1].group(0)) +
+                                       len(ms[-1].group(0)))) > 40
+            if not class_designator(label) and class_designator(post_label) and pre_far:
                 label = post_label
             elif not class_designator(label) and class_designator(pre_label):
                 label = pre_label
-        if not label and not re.search(r"shares?|stock|units", span[ne:next_start], re.I):
+        if not label and not re.search(r"shares?|stock|units|CPOs?|ADSs?", span[ne:next_start], re.I):
             continue
+        # two consecutive classes can share one count (Televisa Series L and
+        # Series D, RBC preferred series): a pre label identical to the one the
+        # PREVIOUS entry took belongs to that entry — promote this number's own
+        # following label so the two rows stay distinct
+        if label_first and entries and label == entries[-1].class_label \
+                and post_label and post_label != label:
+            label = post_label
+        m_ser = re.search(r"\b(series\s+[\"']?[A-Za-z0-9]{1,3}[\"']?)\s*$",
+                          span[max(0, ns - 24):ns], re.I)
+        if m_ser and m_ser.group(1).lower() not in label.lower():
+            label = (label + " " + m_ser.group(1)).strip()
         label = _clean_label(label)
         raw_date = _nearest_date(span, ne, window=140)
         ad = iso_date(raw_date) or period
+        # the count's OWN clause names its date after it: "N common shares
+        # outstanding as of April 29, 2025)" — that beats a nearer date that
+        # ends the previous statement
+        post_clause = span[ne:ne + 160]
+        # a decimal point ("par value $0.0001 per share") is not a clause end —
+        # cutting there would hide the clause's own "as of <date>" tail
+        pc_cut = re.search(r"[;)]|\.(?!\d)", post_clause)
+        if pc_cut:
+            post_clause = post_clause[:pc_cut.start()]
+        m_aso = re.search(r"\bas\s+(?:of|at)\s+", post_clause, re.I)
+        if m_aso:
+            dm = _DATE_RE.match(post_clause[m_aso.end():])
+            if dm:
+                raw_date = dm.group(0)
+                ad = iso_date(raw_date) or ad
+        if date_filed:
+            m_dot = re.search(r"as\s+of\s+the\s+date\s+of\s+this\b", post_clause, re.I)
+            if m_dot and not _DATE_RE.search(post_clause[:m_dot.start()]):
+                ad = date_filed
+            else:
+                back_sent = span[max(0, ns - 220):ns]
+                bc = back_sent.rfind(". ")
+                if bc != -1:
+                    back_sent = back_sent[bc + 1:]
+                if re.search(r"as\s+of\s+the\s+date\s+of\s+this\b", back_sent, re.I) \
+                        and not _DATE_RE.search(back_sent):
+                    ad = date_filed
         # a LATER-than-period count inside a parenthetical ("(79,482,768 as of
         # the date of this report)") or a "subsequent to …" sentence is a
         # supplemental update, not the regulatory period-close answer
@@ -840,8 +941,13 @@ def _extract_span_pairs(span, period):
     for sm in re.finditer(
             r"(?<![\d,.$-])\b(\d{1,2}|one)\s+"
             r"((?:Class|Series)\s+[\"']?[A-Z0-9]{1,3}[\"']?\s+)?"
-            r"((?:[A-Za-z]+\s+){0,3}?shares?)\b", span):
-        if not sm.group(2) and not re.search(r"\bspecial\b", sm.group(3), re.I):
+            r"((?:[A-Za-z]+\s+){0,3}?shares?)\b", span, re.I):
+        whole = (sm.group(2) or "") + sm.group(3)
+        if not class_designator(whole) and not re.search(r"\bspecial\b", whole, re.I):
+            continue
+        if _skip_number_context(span, sm.start(1), sm.end(1)):
+            continue
+        if re.search(r"\b(?:consisting\s+of|of)\s*$", span[max(0, sm.start() - 16):sm.start(1)], re.I):
             continue
         raw = sm.group(1)
         val = 1 if raw == "one" else int(raw)
@@ -853,13 +959,24 @@ def _extract_span_pairs(span, period):
             as_of_date=iso_date(raw_date) or period, raw_date=raw_date or period,
             matched_text=re.sub(r"\s+", " ", span[max(0, sm.start() - 40):sm.end() + 40]).strip(),
         ))
+    for sm in re.finditer(
+            r"((?:Class|Series)\s+[\"']?[A-Z0-9]{1,3}[\"']?[\w ,]{0,44}?):\s*"
+            r"(\d{1,3})\s+shares\s+outstanding", span, re.I):
+        raw_date = _nearest_date(span, sm.end(), window=140)
+        label = _clean_label(sm.group(1))
+        entries.append(ClassEntry(
+            shares=int(sm.group(2)), raw_number=sm.group(2), scale="",
+            class_label=label, share_type=classify_share_type(label),
+            as_of_date=iso_date(raw_date) or period, raw_date=raw_date or period,
+            matched_text=re.sub(r"\s+", " ", sm.group(0)).strip(),
+        ))
     return _dedupe(entries)
 
 
 # ---------------------------------------------------------------------------
 # Extraction strategy B: cover-window scan (10-K, and 20-F/40-F fallback)
 # ---------------------------------------------------------------------------
-def extract_cover_window(text):
+def extract_cover_window(text, date_filed=""):
     """Scan every 'outstanding' in the cover region; for each, look for a nearby
     share-count number tied to a share word, skipping decoy contexts. Captures
     multiple share classes (e.g. Alphabet A/B/C) naturally."""
@@ -960,10 +1077,22 @@ def extract_cover_window(text):
                              re.sub(r"\s+", " ", text[max(0, n_start - 140):n_start]), re.I)
             if dual:
                 raw_date = dual.group(2) if dual.group(3) else dual.group(1)
+            ad = iso_date(raw_date)
+            # "As of the date of this Annual Report, the registrant had N …" —
+            # the sentence's own sentinel beats a stale date inherited from the
+            # previous sentence (sentinel sentences print no real date at all)
+            if date_filed:
+                back_sent = text[max(0, n_start - 220):n_start]
+                bc = back_sent.rfind(". ")
+                if bc != -1:
+                    back_sent = back_sent[bc + 1:]
+                if re.search(r"as\s+(?:of|at)\s+the\s+date\s+of\s+this\b", back_sent, re.I) \
+                        and not _DATE_RE.search(back_sent):
+                    ad = date_filed
             entries.append(ClassEntry(
                 shares=num, raw_number=nm.group(1), scale=(nm.group(2) or "").lower(),
                 class_label=label, share_type=classify_share_type(label) if label else "common",
-                as_of_date=iso_date(raw_date), raw_date=raw_date,
+                as_of_date=ad, raw_date=raw_date,
                 matched_text=re.sub(r"\s+", " ", text[max(0, n_start - 80):n_end + 50]).strip(),
             ))
     # tiny named-class counts ("… and 1 Class B ordinary share issued and
@@ -1015,10 +1144,18 @@ def _skip_number_context(text, ns, ne):
         return True
     # a number deep inside a still-open "(excluding … N …)" parenthetical is part
     # of the exclusion, however long the clause runs
-    back = text[max(0, ns - 220):ns]
-    op = back.rfind("(")
-    if op != -1 and ")" not in back[op:] and \
-       re.search(r"\bexclud(?:ing|es)\b|\bexclusive\s+of\b", back[op:op + 30], re.I):
+    back = text[max(0, ns - 420):ns]
+    depth, op = 0, -1
+    for i in range(len(back) - 1, -1, -1):
+        if back[i] == ")":
+            depth += 1
+        elif back[i] == "(":
+            if depth == 0:
+                op = i
+                break
+            depth -= 1
+    if op != -1 and re.search(r"\bexclud(?:ing|es)\b|\bexclusive\s+of\b",
+                              back[op:op + 30], re.I):
         return True
     # "including N ..." / "(which includes N ...)" is a subset UNLESS N is itself a
     # named class component of the total that precedes it
@@ -1039,6 +1176,12 @@ def _skip_number_context(text, ns, ne):
     # "N shares ... issuable upon ..." — issuable shares are never outstanding
     if re.search(r"^\s*(?:[a-z'.&\- ]{0,30})?shares?\b[^.;]{0,45}\bissuable\b",
                  text[ne:ne + 90], re.I):
+        return True
+    # "The B Units represent a total of N Series B Shares, M Series D-B Shares
+    # and M Series D-L Shares" — every number in that enumeration is a
+    # re-expression of the unit count
+    rt = re.search(r"\brepresents?\s+a\s+total\s+of\b", text[max(0, ns - 150):ns], re.I)
+    if rt and not re.search(r"[.;]", text[max(0, ns - 150) + rt.end():ns]):
         return True
     # the denominator of a split ratio ("1-for-4,000 reverse stock split")
     if re.search(r"\d\s*-\s*for\s*-\s*$", text[max(0, ns - 12):ns], re.I):
@@ -1076,11 +1219,13 @@ def _skip_number_context(text, ns, ne):
             fwd = fwd[:cut.start()]
         low_fwd = fwd.lower()
         back200 = text[max(0, ns - 200):ns].lower()
-        b = max(back200.rfind(". "), back200.rfind("\n"))
+        # sentence boundary = ". " only: a soft-wrap newline mid-sentence
+        # ("… shares of each of the\nissuer's classes …") is not a boundary
+        b = back200.rfind(". ")
         back_sent = back200[b + 1:] if b != -1 else back200
         if "respectively" in low_fwd and \
            (("issued" in low_fwd and "outstanding" in low_fwd) or
-            ("issued and outstanding" in back_sent)):
+            re.search(r"issued\s+and\s+outstanding", back_sent)):
             return True
     if re.search(r"(?:retroactively|post-?reverse|after\s+giving\s+effect|"
                  r"as\s+adjusted|giving\s+retroactive)\b", pre):
@@ -1089,20 +1234,20 @@ def _skip_number_context(text, ns, ne):
     # effect to the Business Combination … the issuer had N …", "(N1 and N2 …
     # if retroactively adjusted to reflect the consolidation)", "(… following
     # the 1-for-10 reverse share split)"
-    if re.search(r"\bafter\s+giving\s+effect\b|\bgiving\s+effect\s+to\b",
-                 text[max(0, ns - 160):ns], re.I):
+    back_ge = text[max(0, ns - 300):ns]
+    bg = back_ge.rfind(". ")
+    if bg != -1:
+        back_ge = back_ge[bg + 1:]
+    if re.search(r"\bafter\s+giving\s+effect\b|\bgiving\s+effect\s+to\b", back_ge, re.I):
         return True
     # … but only for a number INSIDE the restatement parenthetical ("(there
     # were N1 … if retroactively adjusted …)"). A real count followed by such a
     # parenthetical ("2,370,139 ordinary shares … (retroactively adjusted to
     # reflect the consolidation)") IS the adjusted, correct count — keep it.
     back240 = text[max(0, ns - 240):ns]
-    bcut = max(back240.rfind(". "), back240.rfind("\n"))
-    if bcut != -1:
-        back240 = back240[bcut + 1:]
     if back240.count("(") > back240.count(")"):
         fwd300 = text[ne:ne + 300]
-        cut = re.search(r"(?<!\d)\.(?=\s)|\n", fwd300)
+        cut = re.search(r"(?<!\d)\.(?=\s)", fwd300)
         if cut:
             fwd300 = fwd300[:cut.start()]
         if re.search(r"\bif\s+retroactively\s+adjusted\b|\bretroactively\s+adjusted\s+to\s+reflect\b|"
@@ -1130,7 +1275,7 @@ def _skip_number_context(text, ns, ne):
     # connective: "B Units, each consisting of five Series B Shares" describes
     # unit COMPOSITION, not a redundant total.
     fwd_tot = text[ne:ne + 175]
-    cut = re.search(r"(?<!\d)\.(?=\s)|\n", fwd_tot)
+    cut = re.search(r"(?<!\d)\.(?=\s)", fwd_tot)
     if cut:
         fwd_tot = fwd_tot[:cut.start()]
     m_conn = re.search(r"\b(?:consisting\s+of|comprised\s+of|comprising|composed\s+of|"
@@ -1138,14 +1283,27 @@ def _skip_number_context(text, ns, ne):
                        r"divided\s+into|"
                        r"(?<!each )with(?!\s+(?:a\s+|no\s+)?(?:par|nominal)\b))\b",
                        fwd_tot, re.I)
+    # the component count must live in the SAME sentence as the connective
+    # ("each consisting of five Series B Shares." + a count in the NEXT
+    # sentence is unit composition, not a breakdown)
     if m_conn and re.search(r"(?<![\d.$])(?:\d{1,3}(?:,\d{3})+|\d{5,})",
-                            text[ne + m_conn.end():ne + m_conn.end() + 90]):
+                            fwd_tot[m_conn.end():]):
         return True
-    # "X shares, including A Class A ... and B Class B" -> X is the total, drop it
-    if re.search(r"^[^;]{0,90}?\bincluding\s+\d[\d,. ]*\s*"
-                 r"(?:thousand|million|billion)?\s*[a-z'.&\- ]*?class\s+[a-z0-9]",
-                 fwd_tot, re.I):
-        return True
+    # "X shares, including A Class A ... and B Class B" -> X is the total, drop
+    # it — but only when the included count is a substantial component (>= 15%
+    # of X): "including 1,692 Class A shares held by the depositary" is a
+    # footnote subset of a REAL class count, not a breakdown
+    m_inc = re.search(r"^[^;]{0,90}?\bincluding\s+(\d[\d,]*)\s*"
+                      r"(?:thousand|million|billion)?\s*[a-z'.&\- ]*?class\s+[a-z0-9]",
+                      fwd_tot, re.I)
+    if m_inc:
+        cur = _to_int(re.sub(r"[^\d,]", "", text[ns:ne]) or "0", None)
+        inc = _to_int(m_inc.group(1), None)
+        qual = re.search(r"\b(?:tender|redeem|redempt|reserved|escrow|forfeit|"
+                         r"unvested|underlying|issuable|repurchas)",
+                         fwd_tot[m_inc.end():m_inc.end() + 60].split("(")[0], re.I)
+        if cur and inc and inc >= 0.15 * cur and not qual:
+            return True
 
     # 'X [shares of the registrant's common stock] issued and Y outstanding' ->
     # X is the issued count, not the answer; the class descriptor between the
@@ -1164,8 +1322,14 @@ def _skip_number_context(text, ns, ne):
                       post[:40])):
         return True
 
-    # a "Total" table-row label right before the number is an arithmetic sum row
-    if re.search(r"\b(?:sub)?total\s*:?\s*$", text[max(0, ns - 14):ns], re.I):
+    # "a total of N Class A ordinary shares … that have been repurchased" —
+    # a buyback subtotal inside a counting note
+    if re.search(r"^[^;()]{0,110}?\brepurchas", text[ne:ne + 130], re.I):
+        return True
+    # a "Total" table-row label right before the number is an arithmetic sum
+    # row ("Total First Preferred Shares 141,604,079"); "a total of N" prose is
+    # NOT a row label
+    if re.search(r"\b(?:sub)?total\b(?!\s+of)[\w\s]{0,32}$", text[max(0, ns - 44):ns], re.I):
         return True
 
     # "N per share" is a par value or price, never a count ("par value ￦ 5,000
@@ -1180,7 +1344,7 @@ def _skip_number_context(text, ns, ne):
     # warrant count, but "N Warrants 14,391,150" is the NEXT row's label-first
     # pair — the digit after the warrant word marks that case.
     pre_row = text[max(0, ns - 90):ns]
-    b = max(pre_row.rfind("\n"), pre_row.rfind(". "))
+    b = pre_row.rfind(". ")
     if b != -1:
         pre_row = pre_row[b + 1:]
     if re.search(r"\bwarrants?\b|\boptions?\s+to\s+purchase\b", pre_row.lower()):
@@ -1425,16 +1589,16 @@ def process_filing(session, filing, do_xbrl=True):
         if re.search(r"number of shares[^.\n]{0,60}each registrant", cover, re.I):
             ex.flags.append("MULTI_REGISTRANT")
         if filing.form in ("20-F", "40-F"):
-            entries = extract_anchor(text, period)
+            entries = extract_anchor(text, period, filing.date_filed)
             ex.method = "anchor" if entries else ""
             if not entries:
-                entries = extract_cover_window(cover)
+                entries = extract_cover_window(cover, filing.date_filed)
                 ex.method = "cover_window" if entries else "none"
         else:  # 10-K
             entries = extract_cover_window(cover)
             ex.method = "cover_window" if entries else "none"
             if not entries:  # last resort: anchor anywhere (rare combined forms)
-                entries = extract_anchor(text, period)
+                entries = extract_anchor(text, period, filing.date_filed)
                 ex.method = "anchor" if entries else "none"
 
         # 20-F / 40-F: the as-of date is the fiscal close; fill it from the SGML
@@ -1472,6 +1636,38 @@ def process_filing(session, filing, do_xbrl=True):
                     if k not in best or e.shares > best[k].shares:
                         best[k] = e
                 entries = list(best.values())
+        # an entry exactly equal to the sum of two or more sibling entries of
+        # the same broad type is a redundant aggregate total ("23,359,000 …"
+        # then "8,388,012 Class A + 14,970,988 Class B") — keep the components
+        if len(entries) >= 3:
+            import itertools
+            EQ = {"common", "ordinary"}
+            for cand in list(entries):
+                # only common/ordinary totals, and only when the candidate is
+                # the largest of its type — bank covers list many round-number
+                # preferred series whose sums collide by arithmetic accident
+                if cand.share_type not in EQ:
+                    continue
+                sibs = [e for e in entries if e is not cand and e.share_type in EQ]
+                if any(e.shares >= cand.shares for e in sibs):
+                    continue
+                hit = False
+                for r in (2, 3, 4):
+                    if hit or len(sibs) < r:
+                        continue
+                    for combo in itertools.combinations(sibs, r):
+                        if sum(e.shares for e in combo) == cand.shares:
+                            hit = True
+                            break
+                if hit:
+                    entries = [e for e in entries if e is not cand]
+        if filing.form in ("20-F", "40-F") and period:
+            EQb = {"common", "ordinary"}
+            broad = lambda t: "E" if t in EQb else t
+            has_period = {broad(e.share_type) for e in entries if e.as_of_date == period}
+            entries = [e for e in entries
+                       if not (e.as_of_date and e.as_of_date > period
+                               and broad(e.share_type) in has_period)]
         ex.entries = entries
 
         if do_xbrl:
