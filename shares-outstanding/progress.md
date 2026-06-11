@@ -66,6 +66,24 @@ index.
    fix + the golden date check tightened so an empty extracted date no longer
    passes a dated golden row). Golden table unchanged. Artifacts in
    `DATA_DIR/audit/confirm2/`.
+6. **CSV review gate + label-quality pass** — an independent reviewer of the
+   rendered CSV found fallback-label junk and, critically, duplicate
+   same-designator rows: the signature of label fossils shared by BOTH the
+   extractor and golden (`round1_agree` labels copied from the old extractor —
+   no disagreement, so never adjudicated; e.g. Donegal's Class B row labeled
+   "Class A", Trulieve's Multiple Voting Shares labeled "Shares"). Fixes: the
+   golden label check now compares designator + voting-tier qualifier set
+   (`label_sig` — subordinate/multiple/super/proportionate/non-voting/special/
+   LT-n; limited/restricted only in voting names), which surfaced 9 fossil
+   filings; extractor learned voting-tier class names, paired-respectively
+   binding ("Class A … and Class B … was N1 and N2, respectively"), the
+   registrant-phrased anchor, digit-led labels ("25p ordinary shares") and
+   mid-word split repair for ordinary/common; the 9 goldens were re-ruled by
+   sonnet label adjudication (`DATA_DIR/audit/labels2/`, Cresco's voting-tier
+   types harmonized to the panel convention) and applied with provenance.
+   Final CSV re-review: **PASS** (no fragments, no duplicates, designators
+   verified against bank-series prospectuses). 898/898 holds under the
+   stricter check.
 
 ### Conventions the dataset encodes (decided by adjudication/panel, applied corpus-wide)
 
