@@ -82,8 +82,10 @@ def check(gold, ext_entries):
     g_type = {c["number"]: c.get("share_type", "") for c in g_classes if c.get("number")}
     if CHECK_DATE:
         for a, e in pairs:
-            if g_date.get(a) and e_date.get(e) and g_date[a] != e_date[e]:
-                return "FAIL_DATE", f"{e}: ext={e_date[e]} truth={g_date[a]}"
+            # golden has a date => ext must carry the SAME date; an empty ext
+            # date is a miss, not a free pass
+            if g_date.get(a) and g_date[a] != e_date.get(e, ""):
+                return "FAIL_DATE", f"{e}: ext={e_date.get(e, '')} truth={g_date[a]}"
     if CHECK_TYPE:
         for a, e in pairs:
             gt, et = g_type.get(a, ""), e_type.get(e, "")

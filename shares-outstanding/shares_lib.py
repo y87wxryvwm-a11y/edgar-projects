@@ -435,8 +435,10 @@ def cover_region(text):
 _MONTHS = ("January|February|March|April|May|June|July|August|September|"
            "October|November|December")
 _DATE_RE = re.compile(
-    rf"\b(?:{_MONTHS})\s+\d{{1,2}}\s*,?\s+\d{{4}}\b"
-    rf"|\b\d{{1,2}}\s+(?:{_MONTHS})\s*,?\s+\d{{4}}\b"
+    # "March 28,2025" (no space after the comma) is a common cover artifact —
+    # the year needs a comma OR whitespace before it, not necessarily both
+    rf"\b(?:{_MONTHS})\s+\d{{1,2}}(?:\s*,\s*|\s+)\d{{4}}\b"
+    rf"|\b\d{{1,2}}\s+(?:{_MONTHS})(?:\s*,\s*|\s+)\d{{4}}\b"
     rf"|\b\d{{4}}-\d{{2}}-\d{{2}}\b"
     rf"|\b(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])/(?:19|20)\d{{2}}\b",
     re.I,
@@ -508,11 +510,11 @@ def iso_date(raw):
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", raw)
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    m = re.match(rf"({_MONTHS})\s+(\d{{1,2}})\s*,?\s+(\d{{4}})", raw, re.I)
+    m = re.match(rf"({_MONTHS})\s+(\d{{1,2}})(?:\s*,\s*|\s+)(\d{{4}})", raw, re.I)
     if m:
         mo = _MONTH_NUM[m.group(1).lower()]
         return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(2)):02d}"
-    m = re.match(rf"(\d{{1,2}})\s+({_MONTHS})\s*,?\s+(\d{{4}})", raw, re.I)
+    m = re.match(rf"(\d{{1,2}})\s+({_MONTHS})(?:\s*,\s*|\s+)(\d{{4}})", raw, re.I)
     if m:
         mo = _MONTH_NUM[m.group(2).lower()]
         return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(1)):02d}"
