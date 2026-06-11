@@ -118,8 +118,8 @@ def _decoy(text, start, end):
     is a documented trap observed across many filings, not a one-off fix."""
     pre = text[max(0, start - 80):start]
     post = text[end:end + 80]
-    if re.search(r"\$\s*\(?\s*$", pre):
-        return "DOLLAR"                      # market value / par value amounts
+    if re.search(r"[\$£€¥]\s*\(?\s*$", pre):
+        return "DOLLAR"                      # market/par value, any currency
     if re.search(r"(?i)\bweighted[\s-]+average\b", pre):
         return "WEIGHTED"                    # EPS share counts
     if re.search(r"(?i)^\s*(?:record\s+holders?|holders?\s+of\s+record|"
@@ -165,9 +165,10 @@ def _decoy(text, start, end):
         return "FILE_NUMBER"
     # ownership breakdowns ("19,222,141 held by the ESOP and ...") and
     # carve-outs the cover itself excludes from the outstanding count
-    if re.match(r"(?i)\s*(?:shares?\s+)?(?:are\s+|were\s+)?held\s+by\b",
-                post) and not re.match(r"(?i)\s*(?:shares?\s+)?(?:are\s+|were\s+)?"
-                                       r"held\s+by\s+non", post):
+    if re.match(r"(?i)\s*(?:shares?\s+)?(?:of\s+which\s+)?(?:are\s+|were\s+)?"
+                r"held\s+(?:by|as|in)\b", post) and not \
+            re.match(r"(?i)\s*(?:shares?\s+)?(?:are\s+|were\s+)?held\s+by\s+non",
+                     post):
         return "HELD_BY_BREAKDOWN"
     if re.search(r"(?i)\breserved\s+for\b", post[:60]) or \
             re.search(r"(?i)^\s*(?:shares?\s+)?(?:repurchased|reserved)\b", post):
@@ -325,8 +326,9 @@ def _nearest_date(text, anchor_pos, prefer_as_of=True, reach=400):
         if not iso:
             continue
         dist = abs(m.start() - anchor_pos)
-        as_of = bool(re.search(r"(?i)\b(?:as\s+of|as\s+at|dated)\s*$",
-                               text[max(0, m.start() - 12):m.start()]))
+        as_of = bool(re.search(r"(?i)\b(?:as\s+of|as\s+at|dated|"
+                               r"outstanding\s+(?:on|at))\s*$",
+                               text[max(0, m.start() - 18):m.start()]))
         rank = (0 if (as_of and prefer_as_of) else 1, dist)
         if best is None or rank < best[0]:
             best = (rank, iso)
@@ -351,8 +353,12 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
     def consider(start, end, num_text, scale_word, extra_flags):
         if _is_bare_year(num_text, scale_word):
             return
-        if "." in num_text and not scale_word:
-            return                            # bare decimals are ratios/prices
+        # bare decimals are ratios/prices — EXCEPT a genuine fractional count
+        # ("935.51 shares outstanding" at parent-owned subs, fractional fund
+        # units), recognized below by noun adjacency + an outstanding nearby
+        is_decimal = "." in num_text and not scale_word
+        if is_decimal and float(num_text.split(".")[0].replace(",", "") or 0) < 100:
+            return
         if text[end:end + 1] == "/" or text[max(0, start - 1):start] == "/":
             return                            # component of a 3/20/2025 date
         if text[end:end + 1] == "-" or text[max(0, start - 1):start] == "-":
@@ -380,6 +386,13 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
         noun = _nearest_noun(text, start, end)
         if noun is None:
             return
+        if is_decimal:
+            if not (0 <= noun.start() - end <= 25 and
+                    re.search(r"(?i)\boutstanding\b",
+                              text[max(0, start - 120):end + 120])):
+                return
+            value = float(num_text.replace(",", ""))
+            extra_flags = list(extra_flags) + ["FRACTIONAL_SHARES"]
         if value < 1000 and "," not in num_text and not scale_word:
             # small bare integers need the share noun adjacent (either side):
             # "100 shares" / "common stock was 100"
@@ -387,6 +400,8 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
             if not (0 <= gap <= 25):
                 return
         label = _expand_label(text, noun.start(), noun.end())
+        if re.search(r"(?i)\bvalue\s+per\s+share$|^(?:par\s+)?value$", label):
+            return                            # "$0.005 par value per share"
         # "Class A Preference Shares, Series 24" — the series rides AFTER
         # the noun; without it multi-series preferreds are indistinguishable
         sm = re.match(r"(?i),?\s*(series\s+[a-z0-9]{1,6})\b",
@@ -437,8 +452,8 @@ def _dedupe_rows(cands):
 
 
 _COLON_BOUND_RE = re.compile(
-    r"(?i)\bnumber\s+of\s+([^\n:]{3,90}?)\s+(?:issued\s+and\s+)?outstanding\b"
-    r"[^:\n]{0,80}:\s*\$?\s*(\d[\d,]*)")
+    r"(?is)\bnumber\s+of\s+([^\n:]{3,90}?)\s+(?:issued\s+and\s+)?outstanding\b"
+    r"[^:]{0,100}:\s*\$?\s*(\d[\d,]*)")
 
 
 def _colon_bound_candidates(text, lo, hi):
@@ -730,6 +745,8 @@ def _repair_text(text):
       stripped."""
     text = re.sub(r"(?<=[A-Za-z])\.(?=\d)", ". ", text)
     text = re.sub(r"(\d{1,3}(?:,\d{3})+)(\d{1,2})(?=[^\d,]|$)", r"\1", text)
+    # "6,903,056shares" — a word glued straight onto a grouped number
+    text = re.sub(r"(\d{1,3}(?:,\d{3})+)(?=[A-Za-z])", r"\1 ", text)
     return text
 
 

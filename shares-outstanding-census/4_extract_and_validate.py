@@ -94,6 +94,14 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
 
     n_match = 0
     for r in rows:
+        v = r["value"]
+        # a fractional prose count matches the filer's rounded integer tag —
+        # the integer fact is thereby accounted for, the exact value stands
+        if v not in fact_values and float(v) != int(v) and \
+                (int(round(v)) in fact_values or int(v) in fact_values):
+            r["flags"].append("XBRL_ROUNDED_MATCH")
+            rounded = int(round(v)) if int(round(v)) in fact_values else int(v)
+            fact_values = sorted((set(fact_values) - {rounded}) | {v})
         if r["value"] in fact_values:
             r["xbrl"] = "XBRL_MATCH"
             n_match += 1
@@ -153,10 +161,13 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
         status = "EMPTY"
 
     for r in rows:
+        v = r["value"]
         ext_rows.append({
             "accession": row.accession, "cik": row.cik,
             "company_name": row.company_name, "form": row.form,
-            "value": r["value"], "share_class_label": r["label"],
+            # fractional counts (rare, real) print exactly; ints stay ints
+            "value": ("%d" % v) if float(v) == int(v) else ("%s" % v),
+            "share_class_label": r["label"],
             "share_type": r["share_type"],
             "class_designator": r["class_designator"],
             "registrant": r["registrant"],
