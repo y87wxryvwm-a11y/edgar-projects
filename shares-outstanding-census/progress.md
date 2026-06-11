@@ -53,7 +53,30 @@ Notes for the downstream relevance/status pass:
 Next: script 2 — fetch + cache each in-scope filing's primary document (cover
 region + its inline-XBRL dei facts), then the extractor.
 
-## 2026-06-11 — documents cached, extractor iterating against XBRL
+## 2026-06-11 — DATASET COMPLETE
+
+Final state: `shares_outstanding_2025.csv` — **8,410 share-class rows across
+6,771 filings**; `filing_coverage_2025.csv` accounts for all 7,650 filings
+(825 ABS-excluded, 6,185 XBRL-validated, 150 reads-confirmed, 436 override,
+54 no-disclosure, **0 unresolved**). Row provenance: 7,910 XBRL_MATCH (94.1%),
+85 XBRL_AGG_MATCH, 231 READS_SONNET_CONFIRMED, 184 OVERRIDE_VERIFIED.
+Byte-identical across full rebuilds; assertion suite green (no future dates,
+no ambiguous class labels, 1 genuinely undatable row).
+
+The ladder as run: ~5 extractor iteration rounds against full-population
+XBRL signal (86% → 91.2% filing-level validation, every rule general);
+tier-2: 2×745 + 649 blind haiku reads; tier-3: 414 + 68 sonnet adjudications
+of every conflict, 110 blind sonnet verifications; Opus (6 of the ≤10
+budget): 3-agent panel on XBRL-contradicted rulings, 1 flag-resolution
+agent, 1 full audit, 1 delta audit. Both audits spot-checked rows against
+the filings; all counts matched; their label/date findings (market-value-
+date grabs, equal-count class collapses, label swaps) were fixed via general
+rules + audited overrides and re-verified. `overrides.py` carries every
+non-extractor row with provenance (150 confirmed / 54 no-shares / 436
+override entries).
+
+For 2026: set `year = 2026` in scripts 1–7, run in order; the tier-2/3
+process re-runs only for whatever the new year's XBRL can't settle.
 
 All 6,825 in-scope primary documents fetched and cached (24 GB raw → 1.7 GB
 gzipped, 0 failures). Extractor + inline-XBRL parser built and iterated

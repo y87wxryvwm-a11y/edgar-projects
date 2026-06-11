@@ -23,6 +23,7 @@ year = 2025
 
 import gzip
 import os
+import re
 
 import pandas as pd
 
@@ -50,6 +51,35 @@ facts = pd.read_csv(facts_path, dtype=str, keep_default_na=False)
 facts["value"] = facts["value"].astype("int64")
 facts_by_acc = {a: g for a, g in facts.groupby("accession")}
 
+_CLASS_MEMBER_RE = re.compile(
+    r"(?:Common)?Class([A-Z])\w*Member$|Class([A-Z])\b")
+_PRETTY_MEMBER_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
+
+
+def _pretty(member):
+    return _PRETTY_MEMBER_RE.sub(" ", re.sub(r"Member$", "", member)).strip()
+
+
+def fact_dims_maps(f):
+    """Per-value class designator, class member name, and registrant from
+    the filer's own dimension members — the authoritative attribution for
+    ambiguous prose."""
+    cls, cls_name, reg = {}, {}, {}
+    for _, fr in f.iterrows():
+        v = int(fr["value"])
+        for dim in (fr["dims"] or "").split("|"):
+            if dim.startswith("StatementClassOfStockAxis=") or \
+                    dim.startswith("ClassesOfShareCapitalAxis="):
+                member = dim.split("=", 1)[1].split(":")[-1]
+                m = _CLASS_MEMBER_RE.search(member)
+                if m:
+                    cls.setdefault(v, (m.group(1) or m.group(2)))
+                cls_name.setdefault(v, _pretty(member))
+            elif dim.startswith("LegalEntityAxis="):
+                member = dim.split("=", 1)[1].split(":")[-1]
+                reg.setdefault(v, _pretty(member))
+    return cls, cls_name, reg
+
 # secondary XBRL source: SEC's companyconcept API (joined by accession);
 # used only where the filing's own inline XBRL yielded no facts
 api_by_acc = {}
@@ -75,7 +105,8 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
 
     multi = int(row.n_filers) > 1
     rows, filing_flags = cx.extract_cover(
-        text, row.form, row.period_of_report, multi_registrant=multi)
+        text, row.form, row.period_of_report, multi_registrant=multi,
+        filed_date=row.date_filed)
     if multi:
         filing_flags.append("MULTI_REGISTRANT")
 
@@ -107,7 +138,14 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
             n_match += 1
             inst = fact_dates.get(r["value"], "")
             if r["as_of"] and inst and r["as_of"] != inst:
-                r["flags"].append("DATE_DIFF_VS_XBRL")
+                # the tag's instant IS the filer's own as-of for this exact
+                # count; a differing prose-derived date is a wrong grab
+                # (typically the Q2 market-value date)
+                if inst <= (pd.to_datetime(row.date_filed) + pd.Timedelta(days=14)).strftime("%Y-%m-%d"):
+                    r["as_of"] = inst
+                    r["flags"].append("DATE_FROM_XBRL_TAG")
+                else:
+                    r["flags"].append("DATE_DIFF_VS_XBRL")
             elif not r["as_of"] and inst:
                 r["flags"].append("XBRL_HAS_DATE")
         elif fact_values:
@@ -118,6 +156,51 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
         else:
             r["xbrl"] = "XBRL_ABSENT"
     matched_values = {r["value"] for r in rows if r["xbrl"] == "XBRL_MATCH"}
+
+    # attribution repairs from the filer's own dimension members + tagged
+    # instants: ambiguous duplicate labels, missing registrants, blank dates
+    if f is not None and len(f) and "dims" in f.columns:
+        cls_map, cls_name_map, reg_map = fact_dims_maps(f)
+        seen_labels = {}
+        for r in rows:
+            seen_labels.setdefault(
+                (r["label"].lower(), r["class_designator"]), []).append(r)
+        ambiguous = {k for k, v in seen_labels.items()
+                     if len({x["value"] for x in v}) > 1}
+        for r in rows:
+            v = int(r["value"]) if float(r["value"]) == int(r["value"]) else None
+            key = (r["label"].lower(), r["class_designator"])
+            mem_desig = cls_map.get(v, "")
+            if mem_desig and (key in ambiguous or
+                              (r["class_designator"] and
+                               r["class_designator"] != mem_desig)):
+                if r["class_designator"] != mem_desig:
+                    r["label"] = re.sub(r"(?i)\bclass\s+[a-z0-9]{1,2}\b",
+                                        "Class " + mem_desig, r["label"]) \
+                        if re.search(r"(?i)\bclass\s+[a-z0-9]{1,2}\b",
+                                     r["label"]) else r["label"]
+                    r["class_designator"] = mem_desig
+                    r["flags"].append("CLASS_FROM_XBRL")
+            # duplicate labels with distinct tagged member names: append the
+            # filer's own member name so the classes stay distinguishable
+            if key in ambiguous and cls_name_map.get(v) and \
+                    not cls_map.get(v) and \
+                    cls_name_map[v].lower() not in r["label"].lower():
+                grp_vals = [int(x["value"]) for x in seen_labels[key]
+                            if float(x["value"]) == int(x["value"])]
+                names = {cls_name_map.get(gv) for gv in grp_vals}
+                if len(names) == len(grp_vals):
+                    r["label"] = "%s (%s)" % (r["label"], cls_name_map[v])
+                    r["flags"].append("CLASS_FROM_XBRL")
+            if int(row.n_filers) > 1 and not r.get("registrant") and \
+                    reg_map.get(v):
+                r["registrant"] = reg_map[v]
+                r["flags"].append("REGISTRANT_FROM_XBRL")
+            if not r["as_of"] and r["xbrl"] == "XBRL_MATCH":
+                inst = fact_dates.get(r["value"], "")
+                if inst:
+                    r["as_of"] = inst
+                    r["flags"].append("DATE_FROM_XBRL_TAG")
 
     if rows and fact_values and n_match == len(rows) and \
             all(v in matched_values for v in fact_values):

@@ -329,8 +329,13 @@ def _nearest_noun(text, num_start, num_end, reach=120):
     return bare_best[1] if bare_best else None
 
 
+_MAX_DATE = [""]  # filing-date ceiling, set per filing by extract_cover
+
+
 def _nearest_date(text, anchor_pos, prefer_as_of=True, reach=400):
-    """The nearest cover date to a position; 'as of <date>' wins ties."""
+    """The nearest cover date to a position; 'as of <date>' wins ties.
+    Dates after the filing date (bond maturities, meeting dates) and dates
+    preceded by 'due' are never a share count's as-of date."""
     lo, hi = max(0, anchor_pos - reach), min(len(text), anchor_pos + reach)
     best = None
     matches = list(_DATE_RE.finditer(text, lo, hi)) + \
@@ -338,6 +343,10 @@ def _nearest_date(text, anchor_pos, prefer_as_of=True, reach=400):
     for m in matches:
         iso = _parse_date_match(m)
         if not iso:
+            continue
+        if _MAX_DATE[0] and iso > _MAX_DATE[0]:
+            continue                          # "Notes due October 16, 2080"
+        if re.search(r"(?i)\bdue\s*$", text[max(0, m.start() - 8):m.start()]):
             continue
         dist = abs(m.start() - anchor_pos)
         as_of = bool(re.search(r"(?i)\b(?:as\s+of|as\s+at|dated|"
@@ -416,6 +425,9 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
         label = _expand_label(text, noun.start(), noun.end())
         if re.search(r"(?i)\bvalue\s+per\s+share$|^(?:par\s+)?value$", label):
             return                            # "$0.005 par value per share"
+        if re.search(r"(?i)%\s+or\s+more|or\s+more\s+of\s+its", label):
+            label = text[noun.start():noun.end()]  # affiliate-clause boilerplate
+            label = re.sub(r"\s+", " ", label).strip(" ,.;:")
         # "Class A Preference Shares, Series 24" — the series rides AFTER
         # the noun; without it multi-series preferreds are indistinguishable
         sm = re.match(r"(?i),?\s*(series\s+[a-z0-9]{1,6})\b",
@@ -540,7 +552,7 @@ _REG_TABLE_HEADER_RE = re.compile(
     r"(?is)number\s+of\s+shares\s+of\s+common\s+stock\s*\n?\s*outstanding"
     r"(?:\s+of\s+the\s+registrants?)?"
     r"|number\s+of\s+shares\s+outstanding\s+of\s+each\s+registrant\W{0,3}s?"
-    r"\s+classes\s+of\s+common\s+stock")
+    r"\s+(?:classes\s+of\s+)?common\s+stock")
 _PURE_NUM_RE = re.compile(r"\$?\s*(\d{1,3}(?:,\d{3})+|\d+)\s*$")
 
 
@@ -562,9 +574,16 @@ def _extract_registrant_table(cover):
     def flush():
         if cur_name and nums:
             name = re.sub(r"\s*\([a-z]\)\s*$", "", cur_name).strip()
+            # "Exelon Corporation Common Stock, without par value" — the
+            # class label rides on the name line; split it off
+            label = cur_label
+            nm = re.search(r"(?i)\s+(common\s+stock\b.*)$", name)
+            if nm and not label:
+                label = nm.group(1)
+                name = name[:nm.start()].strip(" ,")
             label = re.sub(r",?\s*(?:\$[\d.]+\s+par\s+value.*|no\s+par\s+"
-                           r"value.*|par\s+value.*)$", "", cur_label,
-                           flags=re.I).strip(" ,") or "common stock"
+                           r"value.*|without\s+par\s+value.*|par\s+value.*)$",
+                           "", label, flags=re.I).strip(" ,") or "common stock"
             share_type, desig = classify_label(label)
             rows.append({
                 "value": nums[-1], "label": label,
@@ -598,6 +617,9 @@ def _extract_registrant_table(cover):
         if _NOUN_CORE.match(l):
             cur_label = l                  # the class-title line of this row
             continue
+        if l.endswith(".") and len(l.split()) >= 6:
+            continue                       # description sentence ("All of the
+                                           # registrant's ... owned by ...")
         if re.search(r"[A-Za-z]{3}", l):
             flush()
             cur_name, cur_label, nums = l, "", []
@@ -655,7 +677,18 @@ def _extract_10k(text, multi_registrant=False):
     for r in rows:
         r["method"] = "10K_COVER_SCAN"
         if not r["as_of"]:
-            r["flags"].append("NO_DATE")
+            # "as of the date of this filing, there were N shares ..."
+            if _MAX_DATE[0] and re.search(
+                    r"(?i)\bas\s+of\s+the\s+date\s+(?:of|hereof)\s*(?:of\s+)?"
+                    r"this\s+(?:filing|report|annual\s+report)",
+                    cover[max(0, r["pos"] - 250):r["pos"] + 250]):
+                from datetime import date, timedelta
+                y, mo, dy = (int(_MAX_DATE[0][:4]), int(_MAX_DATE[0][5:7]),
+                             int(_MAX_DATE[0][8:10]))
+                r["as_of"] = (date(y, mo, dy) - timedelta(days=14)).isoformat()
+                r["flags"].append("DATE_IS_FILING_DATE")
+            else:
+                r["flags"].append("NO_DATE")
     rows = _drop_superseded(rows)
     if not rows:
         flags.append("NO_MATCH")
@@ -782,16 +815,30 @@ def _repair_text(text):
       12,000,000) — a 1-2 digit tail that breaks the comma grouping is
       stripped."""
     text = re.sub(r"(?<=[A-Za-z])\.(?=\d)", ". ", text)
+    # comma-glued dates ("March 28,2025") must be spaced BEFORE the footnote
+    # stripper below, which would otherwise read 28,2025 as 28,202+footnote
+    text = re.sub(r"(?i)((?:january|february|march|april|may|june|july|august|"
+                  r"september|october|november|december)\.?\s+\d{1,2}),(\d{4})",
+                  r"\1, \2", text)
     text = re.sub(r"(\d{1,3}(?:,\d{3})+)(\d{1,2})(?=[^\d,]|$)", r"\1", text)
     # "6,903,056shares" — a word glued straight onto a grouped number
     text = re.sub(r"(\d{1,3}(?:,\d{3})+)(?=[A-Za-z])", r"\1 ", text)
     return text
 
 
-def extract_cover(text, form, period_of_report="", multi_registrant=False):
+def extract_cover(text, form, period_of_report="", multi_registrant=False,
+                  filed_date=""):
     """(rows, filing_flags) for one filing's clean text. Each row:
     value, label, share_type, class_designator, as_of, method, flags, and
-    registrant (non-empty only for multi-registrant cover tables)."""
+    registrant (non-empty only for multi-registrant cover tables).
+    filed_date (YYYY-MM-DD) caps as-of dates: a count is never as of a
+    future date."""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", filed_date or ""):
+        from datetime import date, timedelta
+        y, mo, dy = int(filed_date[:4]), int(filed_date[5:7]), int(filed_date[8:10])
+        _MAX_DATE[0] = (date(y, mo, dy) + timedelta(days=14)).isoformat()
+    else:
+        _MAX_DATE[0] = ""
     text = _repair_text(text)
     if form == "10-K":
         rows, flags = _extract_10k(text, multi_registrant)

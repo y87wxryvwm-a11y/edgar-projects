@@ -64,6 +64,18 @@ triangulation idea); its code and rulings are not imported.
 | `3_extract_facts.py` | One offline pass over the cached documents: every inline-XBRL `dei:EntityCommonStockSharesOutstanding` fact (value, instant, dimensions) → `ixbrl_facts_{year}.csv`, plus the document reduced to clean text → `cache/text/`. |
 | `4_extract_and_validate.py` | Runs the cover extractor over the cached text and validates every row against the XBRL facts; writes `extraction_{year}.csv` (one row per share class) and `filing_status_{year}.csv` (the per-filing verdict driving the improvement loop). Fast to re-run after every extractor change. |
 | `5_fetch_xbrl_api.py` | SEC companyconcept API per CIK (cached, 404s included) → `xbrl_api_facts_{year}.csv`, the secondary XBRL source where a filing's own document carries no parseable facts. |
+| `6_build_evidence.py` | Neutral evidence packets (cover text + extraction + both XBRL fact sets) for whatever XBRL can't settle — the input to the independent-read tiers. |
+| `7_build_final.py` | Deterministic assembly of `shares_outstanding_{year}.csv` (one row per share class, with validation provenance and quality flags) and `filing_coverage_{year}.csv` (every filing accounted for). Consumes `overrides.py`; no network, no sub-agents. |
+
+`overrides.py` is the committed record of every filing whose rows don't come
+from the extractor alone — confirmations, no-disclosure filings, and
+hand-verified overrides, each with provenance. `METHODOLOGY.md` is the
+plain-English account of how every number was produced and verified.
+
+**2025 result:** 8,410 share-class rows across 6,771 filings; all 7,650
+population filings accounted for; 94.1% of rows validated by the filer's own
+XBRL, the rest by independent multi-model reads or audited overrides;
+byte-identical across rebuilds.
 
 `census_lib.py` is the shared engine; `cover_extractor.py` is the documented
 extraction methodology (every rule a general property of how filings are

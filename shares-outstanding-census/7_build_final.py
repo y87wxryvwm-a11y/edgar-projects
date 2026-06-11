@@ -40,6 +40,9 @@ ext = pd.read_csv(os.path.join(directory, "extraction_%d.csv" % year),
                   dtype=str, keep_default_na=False)
 status = pd.read_csv(os.path.join(directory, "filing_status_%d.csv" % year),
                      dtype=str, keep_default_na=False).set_index("accession")
+facts = pd.read_csv(os.path.join(directory, "ixbrl_facts_%d.csv" % year),
+                    dtype=str, keep_default_na=False)
+facts_vals = {a: set(g["value"]) for a, g in facts.groupby("accession")}
 
 XBRL_OK = {"XBRL_MATCH": "XBRL_MATCH", "XBRL_AGG_MATCH": "XBRL_AGG_MATCH"}
 VALIDATED_STATUSES = {"VALIDATED", "AGG_VALIDATED"}
@@ -60,7 +63,9 @@ for p in pop.itertuples(index=False):
     if acc in OVERRIDES:
         o = OVERRIDES[acc]
         for r in o["rows"]:
-            out_rows.append(dict(r))
+            rr = dict(r)
+            rr.setdefault("flags", "")
+            out_rows.append(rr)
         validation = "OVERRIDE_VERIFIED"
         disposition = "ROWS_FROM_OVERRIDE"
     elif acc in NO_SHARES:
@@ -72,7 +77,8 @@ for p in pop.itertuples(index=False):
                 "value": r["value"], "label": r["share_class_label"],
                 "share_type": r["share_type"],
                 "class_designator": r["class_designator"],
-                "as_of": r["as_of"], "registrant": r["registrant"]})
+                "as_of": r["as_of"], "registrant": r["registrant"],
+                "flags": r["flags"]})
         validation = "XBRL_MATCH" if st == "VALIDATED" else "XBRL_AGG_MATCH"
         disposition = "ROWS_VALIDATED_XBRL"
     elif acc in CONFIRMED:
@@ -82,13 +88,21 @@ for p in pop.itertuples(index=False):
                 "value": r["value"], "label": r["share_class_label"],
                 "share_type": r["share_type"],
                 "class_designator": r["class_designator"],
-                "as_of": r["as_of"], "registrant": r["registrant"]})
+                "as_of": r["as_of"], "registrant": r["registrant"],
+                "flags": r["flags"]})
         validation = CONFIRMED[acc]
         disposition = "ROWS_CONFIRMED_READS"
     else:
         disposition = "UNRESOLVED: " + st
 
     for r in out_rows:
+        row_validation, row_flags = validation, r.get("flags", "")
+        if validation == "OVERRIDE_VERIFIED" and \
+                str(r["value"]) in facts_vals.get(acc, set()):
+            # the value itself is the filer's own tagged number; the override
+            # supplied attribution (labels/dates), not the count
+            row_validation = "XBRL_MATCH"
+            row_flags = ";".join(filter(None, [row_flags, "OVERRIDE_ATTRIBUTION"]))
         rows.append({
             "accession": acc, "cik": p.cik, "company_name": p.company_name,
             "form": p.form, "date_filed": p.date_filed,
@@ -97,7 +111,8 @@ for p in pop.itertuples(index=False):
             "class_designator": r["class_designator"],
             "registrant": r.get("registrant", ""),
             "shares_outstanding": r["value"], "as_of_date": r["as_of"],
-            "validation": validation,
+            "validation": row_validation,
+            "quality_flags": row_flags,
         })
     coverage.append({"accession": acc, "cik": p.cik,
                      "company_name": p.company_name, "form": p.form,
