@@ -111,7 +111,8 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
             r["xbrl"] = "XBRL_ABSENT"
     matched_values = {r["value"] for r in rows if r["xbrl"] == "XBRL_MATCH"}
 
-    if rows and fact_values and n_match == len(rows):
+    if rows and fact_values and n_match == len(rows) and \
+            all(v in matched_values for v in fact_values):
         status = "VALIDATED"
     elif rows and len(fact_values) == 1 and len(rows) > 1 and \
             sum(r["value"] for r in rows if r["share_type"] not in

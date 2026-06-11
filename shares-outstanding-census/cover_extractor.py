@@ -148,9 +148,16 @@ def _decoy(text, start, end):
     if re.search(r"(?i)\b(?:includ(?:ing|es)|exclud(?:ing|es)|exclusive\s+of|"
                  r"after\s+deducting|net\s+of)\s*$", pre):
         return "SUBSET"
-    if re.search(r"(?i)\b(?:options?|warrants?|rsus?|restricted\s+stock\s+units?)\b",
-                 post[:50]):
+    # derivative counts ("4,018,384 Warrants to purchase ...") — but only
+    # when the derivative word is what the number binds to; "59,888,304
+    # common shares and 53,900,329 warrants" must keep the share count
+    if re.search(r"(?i)^\s*(?:\w+\s+){0,2}(?:options?|warrants?|rsus?|"
+                 r"restricted\s+stock\s+units?)\b", post[:60]) and not \
+            _NOUN_CORE.match(post.lstrip()[:60]):
         return "DERIVATIVE"
+    if re.search(r"(?i)\b(?:section|rule)\s*$", pre) or \
+            re.match(r"\s*\(\s*[a-z]\d?\s*\)", post):
+        return "STATUTE_REF"                 # the 12 in "Section 12(b)"
     if re.search(r"(?i)(?:january|february|march|april|may|june|july|august|"
                  r"september|october|november|december)\.?\s*$", pre):
         return "DATE_DAY"                    # the 17 in "October 17, 2025"
@@ -158,13 +165,16 @@ def _decoy(text, start, end):
     # non-affiliates") — but only when no sentence break separates the phrase
     # from the number, else the adjacent market-value SENTENCE would condemn
     # a legitimate count in the next sentence
+    # a sentence boundary is [.;:] or a newline followed by a capital — the
+    # latter catches market-value sentences that start on their own line
+    _boundary = r"[.;:]|\n(?=[A-Z])"
     mpre = re.search(r"(?i)\bheld\s+by\s+non-?\s?affiliates\b", pre[-90:])
-    if mpre and not re.search(r"[.;:]", pre[-90:][mpre.end():]):
+    if mpre and not re.search(_boundary, pre[-90:][mpre.end():]):
         return "NONAFFILIATE"
     if re.search(r"(?i)\bnon-?\s?affiliates\s+held\s*$", pre):
         return "NONAFFILIATE"                # "non-affiliates held N shares ..."
     mpost = re.search(r"(?i)\bheld\s+by\s+non-?\s?affiliates\b", post[:90])
-    if mpost and not re.search(r"[.;:]", post[:90][:mpost.start()]):
+    if mpost and not re.search(_boundary, post[:90][:mpost.start()]):
         return "NONAFFILIATE"
     if re.search(r"(?i)^\s*classes\b", post):
         return "CLASS_COUNT"                 # "3 classes of common stock"
@@ -423,14 +433,17 @@ def _drop_superseded(rows):
 
 def _drop_weak_total(rows):
     """Covers often print 'N shares outstanding, of which X ... and Y ...'.
-    A weakly-labeled row equal to the sum of the others is that total, not a
-    class — drop it (the class rows carry the information)."""
+    A row equal to the sum of the others is that total, not a class — drop
+    it when its label is weak OR duplicates another row's label (the class
+    rows carry the information)."""
     if len(rows) < 3:
         return rows
     for i, r in enumerate(rows):
-        weak = r["label"].lower() in _BARE_NOUNS or "total" in r["label"].lower()
-        if weak and r["value"] == sum(x["value"] for j, x in enumerate(rows) if j != i):
-            return rows[:i] + rows[i + 1:]
+        others = [x for j, x in enumerate(rows) if j != i]
+        weak = r["label"].lower() in _BARE_NOUNS or "total" in r["label"].lower() \
+            or any(x["label"].lower() == r["label"].lower() for x in others)
+        if weak and r["value"] == sum(x["value"] for x in others):
+            return others
     return rows
 
 
@@ -543,6 +556,14 @@ def _extract_10k(text, multi_registrant=False):
     rows = _drop_superseded(rows)
     if not rows:
         flags.append("NO_MATCH")
+        # integral counts only is a documented rule; when a cover shows a
+        # fractional count ("935.51 shares" — parent-owned subs), route it
+        # to review instead of silently missing it
+        if re.search(r"(?i)\b\d[\d,]*\.\d+\s+(?:shares?|units?)\b[^.]{0,120}"
+                     r"\boutstanding\b", cover) or \
+                re.search(r"(?i)\boutstanding\b[^.]{0,80}\b\d[\d,]*\.\d+\s+"
+                          r"(?:shares?|units?)\b", cover):
+            flags.append("FRACTIONAL_COUNT_SUSPECTED")
     if len(rows) > 1:
         flags.append("MULTI_CLASS")
     return rows, flags
