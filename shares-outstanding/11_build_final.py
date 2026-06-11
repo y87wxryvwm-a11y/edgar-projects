@@ -86,8 +86,12 @@ def main():
             continue
         for e in entries:
             n_classes += 1
+            # bare designator ("AX", "JX"); a class with no designator keeps
+            # its label (lowercased so cover-page casing doesn't vary row to
+            # row) so multi-class rows stay distinguishable
+            label = e.get("class_label", "")
             rows.append({**base, "shares": e.get("shares", ""),
-                         "share_class": class_designator(e.get("class_label", "")),
+                         "share_class": class_designator(label) or label.lower(),
                          "share_type": e.get("share_type", ""),
                          "as_of_date": e.get("as_of_date", "")})
 
