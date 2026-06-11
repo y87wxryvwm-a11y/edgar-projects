@@ -52,3 +52,37 @@ Notes for the downstream relevance/status pass:
 
 Next: script 2 — fetch + cache each in-scope filing's primary document (cover
 region + its inline-XBRL dei facts), then the extractor.
+
+## 2026-06-11 — documents cached, extractor iterating against XBRL
+
+All 6,825 in-scope primary documents fetched and cached (24 GB raw → 1.7 GB
+gzipped, 0 failures). Extractor + inline-XBRL parser built and iterated
+against the full-population XBRL signal — the validation ladder working as
+designed. General rules added this round (each from a diagnosed cover
+pattern, never a per-filing hack):
+
+- decoys: non-affiliate market-value share bases (three phrasings, with
+  sentence-boundary guards), treasury labels vs "(exclusive of treasury
+  shares)" clauses, carve-outs ("including/excluding N shares"), authorized
+  vs outstanding in one sentence, footnote-marker digits, "Class 1" digit
+  capture, slash-date components, "N classes of stock";
+- scale: "(in thousands)" before or after the number; space-grouped European
+  digits (Nokia) on FPI covers; Decimal-exact iXBRL scaling ("66.4"
+  scale=6);
+- binding: class noun AFTER the number wins when connected by "shares of"
+  (Ford's Class B), but a fresh label across a newline belongs to the next
+  table row (Molson); long noun phrases (AllianceBernstein units) reachable;
+  "Series N" suffix after the noun (Brookfield's 18 preference series);
+- structure: cover capped at 15k chars (Intel/GE put financials early);
+  same-class rows superseded by later-dated ones (the stale Q2 market-value
+  basis count); weak-labeled totals dropped (Astronics); multi-registrant
+  cover tables parsed per registrant with the count in the last numeric
+  column (AEP 7/7 registrants validate, Hawaiian Electric 2/2);
+- statuses: ZERO_FACT (tagged 0 = no-public-shares signal), PROSE_SUPERSET
+  (all facts confirmed, extra prose rows for tier-2), ROWS_OK_FACTS_UNMATCHED
+  (extra facts — exactly how a missed class hides; never auto-validated).
+
+Snapshot mid-iteration (first 700 cached filings): 96.9% validated-or-
+superset before the latest fix round. Script 3 (text + facts caches) and
+script 5 (companyconcept API, the secondary XBRL source) running; full
+population numbers next.

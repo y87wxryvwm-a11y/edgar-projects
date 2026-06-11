@@ -32,8 +32,10 @@ def make_session(user_agent):
     return session
 
 
-def throttled_get(session, url, stream=False, tries=3):
-    """GET with a global throttle and simple retry/backoff on 403/429/5xx."""
+def throttled_get(session, url, stream=False, tries=3, none_on_404=False):
+    """GET with a global throttle and simple retry/backoff on 403/429/5xx.
+    none_on_404 returns None instead of raising — for APIs where 404 is a
+    meaningful negative (concept never tagged by this filer)."""
     for attempt in range(tries):
         wait = THROTTLE_SECONDS - (time.monotonic() - _last_request_time[0])
         if wait > 0:
@@ -43,6 +45,8 @@ def throttled_get(session, url, stream=False, tries=3):
             resp = session.get(url, stream=stream, timeout=30)
             if resp.status_code == 200:
                 return resp
+            if resp.status_code == 404 and none_on_404:
+                return None
             if resp.status_code in (403, 429, 500, 502, 503) and attempt < tries - 1:
                 time.sleep(5 * (attempt + 1))
                 continue

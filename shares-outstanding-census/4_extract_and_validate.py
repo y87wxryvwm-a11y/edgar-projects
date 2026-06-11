@@ -40,6 +40,7 @@ directory = DATA_DIR.replace("\\", "/")
 text_cache = os.path.join(directory, "cache", "text")
 pop_path = os.path.join(directory, "population_%d.csv" % year)
 facts_path = os.path.join(directory, "ixbrl_facts_%d.csv" % year)
+api_facts_path = os.path.join(directory, "xbrl_api_facts_%d.csv" % year)
 extraction_path = os.path.join(directory, "extraction_%d.csv" % year)
 status_path = os.path.join(directory, "filing_status_%d.csv" % year)
 
@@ -48,8 +49,18 @@ in_scope = pop[pop["excluded_abs"] == "False"].reset_index(drop=True)
 facts = pd.read_csv(facts_path, dtype=str, keep_default_na=False)
 facts["value"] = facts["value"].astype("int64")
 facts_by_acc = {a: g for a, g in facts.groupby("accession")}
+
+# secondary XBRL source: SEC's companyconcept API (joined by accession);
+# used only where the filing's own inline XBRL yielded no facts
+api_by_acc = {}
+if os.path.exists(api_facts_path):
+    api = pd.read_csv(api_facts_path, dtype=str, keep_default_na=False)
+    api["value"] = api["value"].astype("int64")
+    api = api.rename(columns={"end": "instant"})
+    api_by_acc = {a: g for a, g in api.groupby("accession")}
 n = len(in_scope)
-print("in-scope filings: %d, ixbrl facts: %d" % (n, len(facts)), flush=True)
+print("in-scope filings: %d, ixbrl facts: %d, api-covered filings: %d"
+      % (n, len(facts), len(api_by_acc)), flush=True)
 
 ext_rows, status_rows = [], []
 for i, row in enumerate(in_scope.itertuples(index=False), 1):
@@ -62,11 +73,17 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
     with gzip.open(text_path, "rt", encoding="utf-8") as fh:
         text = fh.read()
 
-    rows, filing_flags = cx.extract_cover(text, row.form, row.period_of_report)
-    if int(row.n_filers) > 1:
+    multi = int(row.n_filers) > 1
+    rows, filing_flags = cx.extract_cover(
+        text, row.form, row.period_of_report, multi_registrant=multi)
+    if multi:
         filing_flags.append("MULTI_REGISTRANT")
 
     f = facts_by_acc.get(row.accession)
+    xbrl_source = "inline"
+    if f is None or len(f) == 0:
+        f = api_by_acc.get(row.accession)
+        xbrl_source = "api" if f is not None else ""
     all_fact_values = sorted(set(f["value"].tolist())) if f is not None else []
     # a tagged 0 is a no-public-shares signal, not a validatable count
     fact_values = [v for v in all_fact_values if v != 0]
@@ -110,6 +127,10 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
         for r in rows:
             if r["xbrl"] == "XBRL_MISMATCH":
                 r["xbrl"] = "XBRL_NOT_COVERED"
+    elif rows and fact_values and n_match == len(rows):
+        # every prose row is confirmed but the filer tagged MORE facts —
+        # exactly how a missed share class hides; never auto-validated
+        status = "ROWS_OK_FACTS_UNMATCHED"
     elif rows and fact_values:
         status = "MISMATCH"
     elif rows:
@@ -128,6 +149,7 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
             "value": r["value"], "share_class_label": r["label"],
             "share_type": r["share_type"],
             "class_designator": r["class_designator"],
+            "registrant": r["registrant"],
             "as_of": r["as_of"], "method": r["method"], "xbrl": r["xbrl"],
             "flags": ";".join(sorted(set(r["flags"]))),
             "filing_index_url": row.filing_index_url,
@@ -135,6 +157,7 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
     status_rows.append({
         "accession": row.accession, "form": row.form, "status": status,
         "n_rows": len(rows), "n_facts": len(fact_values),
+        "xbrl_source": xbrl_source,
         "filing_flags": ";".join(sorted(set(filing_flags)))})
 
     if i % 500 == 0 or i == n:

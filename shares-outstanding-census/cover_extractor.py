@@ -46,6 +46,10 @@ _QUALIFIER_WORDS = {
 # The noun core a share-count must attach to.
 _NOUN_CORE = re.compile(r"""(?ix)
     \b(
+        class\s+[a-z0-9]{1,4}\s+
+            (?:(?:exchangeable|common|ordinary|preferred|preference|special|
+                convertible|redeemable|cumulative|voting|non[\s-]?voting|
+                subordinate|multiple|limited)\s+){0,3}(?:stock|shares?) |
         common\s+stock | common\s+shares? | ordinary\s+shares? |
         preferred\s+stock | preferred\s+shares? | preference\s+shares? |
         capital\s+stock | capital\s+shares? | equity\s+shares? |
@@ -53,6 +57,7 @@ _NOUN_CORE = re.compile(r"""(?ix)
         (?:subordinate|multiple|limited|restricted|super)[\s-]+voting\s+shares? |
         non[\s-]?voting\s+(?:common\s+)?shares? |
         common\s+units? | ordinary\s+units? | limited\s+partner(?:ship)?\s+units? |
+        units?\s+representing\s+assignments?\s+of\s+beneficial\s+ownership |
         shares?\s+of\s+(?:the\s+)?(?:registrant|company|issuer)\W{0,3}s\s+
             (?:class\s+[a-z0-9]{1,4}\s+)?(?:common|capital|preferred)\s+stock |
         shares?\s+of\s+(?:class\s+[a-z0-9]{1,4}\s+)?(?:common|capital|preferred)\s+stock |
@@ -154,11 +159,15 @@ def _decoy(text, start, end):
     # from the number, else the adjacent market-value SENTENCE would condemn
     # a legitimate count in the next sentence
     mpre = re.search(r"(?i)\bheld\s+by\s+non-?\s?affiliates\b", pre[-90:])
-    if mpre and not re.search(r"[.;]", pre[-90:][mpre.end():]):
+    if mpre and not re.search(r"[.;:]", pre[-90:][mpre.end():]):
         return "NONAFFILIATE"
+    if re.search(r"(?i)\bnon-?\s?affiliates\s+held\s*$", pre):
+        return "NONAFFILIATE"                # "non-affiliates held N shares ..."
     mpost = re.search(r"(?i)\bheld\s+by\s+non-?\s?affiliates\b", post[:90])
-    if mpost and not re.search(r"[.;]", post[:90][:mpost.start()]):
+    if mpost and not re.search(r"[.;:]", post[:90][:mpost.start()]):
         return "NONAFFILIATE"
+    if re.search(r"(?i)^\s*classes\b", post):
+        return "CLASS_COUNT"                 # "3 classes of common stock"
     if re.search(r"(?i)\b(?:class|series)\s*$", pre):
         return "CLASS_NUMERAL"               # the 1 in "Class 1 Common Stock"
     return ""
@@ -228,25 +237,55 @@ _BARE_NOUNS = ("shares", "share", "stock", "units", "unit")
 
 
 def _nearest_noun(text, num_start, num_end, reach=120):
-    """The share-noun phrase nearest to a number. A qualified noun ("Common
+    """The share-noun phrase a number belongs to. A qualified noun ("Common
     Stock") wins over a nearer bare one ("share" from "per share"); a bare
-    noun only counts when adjacent (within 40 chars)."""
-    best_strong, best_bare = None, None
-    lo, hi = max(0, num_start - reach), min(len(text), num_end + reach)
+    noun only counts when adjacent (within 40 chars).
+
+    Direction: the canonical phrasing is "N shares of CLASS", so an
+    after-noun connected by nothing but "shares of ..." BINDS the number —
+    in "N1 shares of X and N2 shares of Y", Y owns N2, not X. But an
+    after-noun on a NEW LINE that starts a fresh label ("Class B Common
+    Stock" in a label-first table) belongs to the next row, never to this
+    number."""
+    strong_before = strong_after = bare_best = None
+    # the window is by phrase END for before-nouns, so a long phrase whose
+    # start falls outside num_start-reach still counts
+    lo = max(0, num_start - reach - 80)
+    hi = min(len(text), num_end + reach)
     for m in _NOUN_CORE.finditer(text, lo, hi):
-        dist = (m.start() - num_end) if m.start() >= num_end \
-            else (num_start - m.end())
+        after = m.start() >= num_end
+        dist = (m.start() - num_end) if after else (num_start - m.end())
         if dist < 0:
             dist = 0
+        if dist > reach:
+            continue
         if m.group(1).lower() in _BARE_NOUNS:
-            if dist <= 40 and (best_bare is None or dist < best_bare[0]):
-                best_bare = (dist, m)
+            if dist <= 40 and (bare_best is None or dist < bare_best[0]):
+                bare_best = (dist, m)
+        elif after:
+            if strong_after is None or dist < strong_after[0]:
+                strong_after = (dist, m)
         else:
-            if best_strong is None or dist < best_strong[0]:
-                best_strong = (dist, m)
-    if best_strong is not None:
-        return best_strong[1]
-    return best_bare[1] if best_bare else None
+            if strong_before is None or dist < strong_before[0]:
+                strong_before = (dist, m)
+
+    binds = False
+    if strong_after:
+        gap_text = text[num_end:strong_after[1].start()]
+        binds = re.fullmatch(
+            r"(?is)\s*(?:shares?\s+of\s+(?:the\s+)?"
+            r"(?:registrant|company|issuer)\W{0,3}s\s+|shares?\s+of\s+|of\s+)?",
+            gap_text) is not None
+        if "\n" in gap_text and not \
+                strong_after[1].group(1).lower().startswith("share"):
+            binds = False
+    if strong_after and binds:
+        return strong_after[1]
+    if strong_before:
+        return strong_before[1]
+    if strong_after:
+        return strong_after[1]
+    return bare_best[1] if bare_best else None
 
 
 def _nearest_date(text, anchor_pos, prefer_as_of=True, reach=400):
@@ -314,10 +353,18 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
         if noun is None:
             return
         if value < 1000 and "," not in num_text and not scale_word:
-            # small bare integers ("3 classes") need the noun adjacent
-            if not (0 <= noun.start() - end <= 25):
+            # small bare integers need the share noun adjacent (either side):
+            # "100 shares" / "common stock was 100"
+            gap = (noun.start() - end) if noun.start() >= end else (start - noun.end())
+            if not (0 <= gap <= 25):
                 return
         label = _expand_label(text, noun.start(), noun.end())
+        # "Class A Preference Shares, Series 24" — the series rides AFTER
+        # the noun; without it multi-series preferreds are indistinguishable
+        sm = re.match(r"(?i),?\s*(series\s+[a-z0-9]{1,6})\b",
+                      text[noun.end():noun.end() + 20])
+        if sm and "series" not in label.lower():
+            label = label + ", " + sm.group(1)
         share_type, desig = classify_label(label)
         flags = list(scale_flags) + list(extra_flags)
         if scale_word:
@@ -342,14 +389,18 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
 
 
 def _dedupe_rows(cands):
-    """One row per (value, label) — repeated mentions collapse; the earliest
-    position (closest to the top of the cover) wins."""
+    """One row per (value, label). A cover may state the same class twice
+    (once in the market-value sentence, once as the current count) — the
+    occurrence with the LATEST as-of date wins, so a stale duplicate can't
+    pin an old date on a current number; ties go to the earliest position."""
     seen = {}
-    for c in sorted(cands.values(), key=lambda c: c["pos"]):
+    for c in sorted(cands.values(),
+                    key=lambda c: (c.get("as_of") or "", -c["pos"]),
+                    reverse=True):
         key = (c["value"], c["label"].lower())
         if key not in seen:
             seen[key] = c
-    return list(seen.values())
+    return sorted(seen.values(), key=lambda c: c["pos"])
 
 
 def _drop_superseded(rows):
@@ -387,7 +438,75 @@ def _drop_weak_total(rows):
 
 _PART_I_RE = re.compile(r"(?m)(?:^\s*PART\s+I\b[.:]?\s*$|^\s*PART\s+I\b\s*-)")
 
-def _extract_10k(text):
+_REG_TABLE_HEADER_RE = re.compile(
+    r"(?is)number\s+of\s+shares\s+of\s+common\s+stock\s*\n?\s*outstanding"
+    r"(?:\s+of\s+the\s+registrants?)?")
+_PURE_NUM_RE = re.compile(r"\$?\s*(\d{1,3}(?:,\d{3})+|\d+)\s*$")
+
+
+def _extract_registrant_table(cover):
+    """Combined (multi-registrant) 10-Ks print a cover table: one row per
+    registrant, columns for the market value and the share count, the count
+    in the LAST numeric column (both observed shapes — [MV, count] and
+    [MV, older count, current count] — put the current count last). Returns
+    rows or None when no such table parses."""
+    hm = _REG_TABLE_HEADER_RE.search(cover)
+    if not hm:
+        return None
+    stop = re.search(r"(?i)documents\s+incorporated", cover[hm.end():])
+    seg = cover[hm.end():hm.end() + (stop.start() if stop else len(cover))]
+
+    header_dates, rows = [], []
+    cur_name, nums = None, []
+
+    def flush():
+        if cur_name and nums:
+            name = re.sub(r"\s*\([a-z]\)\s*$", "", cur_name).strip()
+            rows.append({
+                "value": nums[-1], "label": "common stock",
+                "share_type": "common", "class_designator": "",
+                "registrant": name, "pos": hm.start(),
+                "flags": ["REGISTRANT_TABLE"],
+            })
+
+    for line in seg.split("\n"):
+        l = line.strip()
+        if not l:
+            continue
+        dm = _DATE_RE.fullmatch(l) or _SLASH_DATE_RE.fullmatch(l)
+        if dm:
+            iso = _parse_date_match(dm)
+            if iso:
+                header_dates.append(iso)
+            continue
+        if l.upper().rstrip(".") in ("NONE", "NA", "N/A", "NOT APPLICABLE"):
+            continue
+        if l.startswith("("):
+            continue                       # par-value notes, footnotes
+        nm = _PURE_NUM_RE.fullmatch(l)
+        if nm:
+            if not l.lstrip().startswith("$"):
+                nums.append(int(nm.group(1).replace(",", "")))
+            continue
+        if re.search(r"[A-Za-z]{3}", l):
+            flush()
+            cur_name, nums = l, []
+    flush()
+
+    rows = [r for r in rows if r["value"] > 0]
+    if len(rows) < 2:
+        return None
+    as_of = max(header_dates) if header_dates else \
+        _nearest_date(cover, hm.start(), reach=600)
+    for r in rows:
+        r["as_of"] = as_of
+        r["method"] = "10K_REGISTRANT_TABLE"
+        if not as_of:
+            r["flags"].append("NO_DATE")
+    return rows
+
+
+def _extract_10k(text, multi_registrant=False):
     flags = []
     m = _PART_I_RE.search(text) or re.search(r"(?im)^\s*part\s+i\b", text)
     if m:
@@ -403,13 +522,21 @@ def _extract_10k(text):
         cover = text[:15000]
         flags.append("NO_COVER_MARKERS")
 
+    if multi_registrant:
+        table_rows = _extract_registrant_table(cover)
+        if table_rows:
+            if len(table_rows) > 1:
+                flags.append("MULTI_CLASS")
+            return table_rows, flags
+
     cands = {}
     for om in re.finditer(r"(?i)\boutstanding\b", cover):
         lo, hi = max(0, om.start() - 400), min(len(cover), om.end() + 400)
         cands.update(_scan_candidates(cover, lo, hi))
+    for c in cands.values():
+        c["as_of"] = _nearest_date(cover, c["pos"])
     rows = _drop_weak_total(_dedupe_rows(cands))
     for r in rows:
-        r["as_of"] = _nearest_date(cover, r["pos"])
         r["method"] = "10K_COVER_SCAN"
         if not r["as_of"]:
             r["flags"].append("NO_DATE")
@@ -477,9 +604,14 @@ def _extract_fpi(text, period_of_report):
 
 # -------------------------------------------------------------- entry point
 
-def extract_cover(text, form, period_of_report=""):
+def extract_cover(text, form, period_of_report="", multi_registrant=False):
     """(rows, filing_flags) for one filing's clean text. Each row:
-    value, label, share_type, class_designator, as_of, method, flags."""
+    value, label, share_type, class_designator, as_of, method, flags, and
+    registrant (non-empty only for multi-registrant cover tables)."""
     if form == "10-K":
-        return _extract_10k(text)
-    return _extract_fpi(text, period_of_report)
+        rows, flags = _extract_10k(text, multi_registrant)
+    else:
+        rows, flags = _extract_fpi(text, period_of_report)
+    for r in rows:
+        r.setdefault("registrant", "")
+    return rows, flags

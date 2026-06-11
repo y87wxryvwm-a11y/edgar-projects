@@ -60,7 +60,13 @@ triangulation idea); its code and rulings are not imported.
 | Script | What it does |
 |---|---|
 | `1_build_population.py` | Quarterly EDGAR indexes → every exact-form annual filing, deduped by accession; fetches each filing's SGML header (cached) for canonical name / CIK / SIC; flags ABS (SIC 6189); writes `population_{year}.csv`. |
+| `2_fetch_documents.py` | Streams each in-scope filing's primary document (the download stops once it's captured — exhibits never transfer); gzip-cached with a sha256 metadata sidecar. |
+| `3_extract_facts.py` | One offline pass over the cached documents: every inline-XBRL `dei:EntityCommonStockSharesOutstanding` fact (value, instant, dimensions) → `ixbrl_facts_{year}.csv`, plus the document reduced to clean text → `cache/text/`. |
+| `4_extract_and_validate.py` | Runs the cover extractor over the cached text and validates every row against the XBRL facts; writes `extraction_{year}.csv` (one row per share class) and `filing_status_{year}.csv` (the per-filing verdict driving the improvement loop). Fast to re-run after every extractor change. |
+| `5_fetch_xbrl_api.py` | SEC companyconcept API per CIK (cached, 404s included) → `xbrl_api_facts_{year}.csv`, the secondary XBRL source where a filing's own document carries no parseable facts. |
 
-`census_lib.py` is the shared engine. All fetches are throttled (~6 req/s)
-and cached under `DATA_DIR/cache/`, so interrupted runs resume where they
-left off and finished runs re-run offline.
+`census_lib.py` is the shared engine; `cover_extractor.py` is the documented
+extraction methodology (every rule a general property of how filings are
+written — never a fix for one particular filing). All fetches are throttled
+(~6 req/s) and cached under `DATA_DIR/cache/`, so interrupted runs resume
+where they left off and finished runs re-run offline.
