@@ -16,6 +16,7 @@ __pycache__/
 # Local data output folders (DATA_DIR may point inside the repo on some machines);
 # only code is committed, never fetched filings / evidence / results
 shares-outstanding/data/
+shares-outstanding-census/data/
 
 # macOS
 .DS_Store
