@@ -1,3 +1,8 @@
+# How the 2025 census datasets were built
+
+Two datasets over the same population: shares outstanding (below) and
+public float (last section). The validation philosophy is identical.
+
 # How the 2025 shares-outstanding census was built
 
 A plain-English account of how every number in `shares_outstanding_2025.csv`

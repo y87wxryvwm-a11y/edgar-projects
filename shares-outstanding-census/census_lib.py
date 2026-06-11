@@ -303,6 +303,7 @@ def doc_to_text(content_bytes, filename):
 
 DEI_NS_PREFIX = "http://xbrl.sec.gov/dei/"
 SHARES_FACT_LOCALNAME = "EntityCommonStockSharesOutstanding"
+FLOAT_FACT_LOCALNAME = "EntityPublicFloat"
 
 
 def _ix_fact_value(el):
@@ -338,11 +339,11 @@ def _ix_fact_value(el):
     return num
 
 
-def parse_ixbrl_dei_facts(content_bytes):
-    """Every dei:EntityCommonStockSharesOutstanding fact tagged in an inline-
-    XBRL document, with its as-of instant and dimension members (share-class
-    axis, legal-entity axis, ...). Returns a list of dicts, deduped; empty
-    list when the document has no inline XBRL or no such facts."""
+def _ixbrl_root_contexts_units(content_bytes):
+    """Parse an inline-XBRL document once: the lxml root, every context
+    (id -> instant + sorted dimension members) and every unit
+    (id -> measure local part, e.g. USD). Returns (None, {}, {}) when the
+    document isn't parseable XML."""
     from lxml import etree
 
     s = content_bytes
@@ -355,33 +356,45 @@ def parse_ixbrl_dei_facts(content_bytes):
         root = etree.fromstring(
             s, parser=etree.XMLParser(recover=True, huge_tree=True))
     except etree.XMLSyntaxError:
-        return []
+        return None, {}, {}
     if root is None:
-        return []
+        return None, {}, {}
 
-    contexts = {}
+    contexts, units = {}, {}
     for ctx in root.iter():
         if callable(ctx.tag):  # comments / processing instructions
             continue
-        if etree.QName(ctx).localname != "context":
+        ln = etree.QName(ctx).localname
+        if ln == "unit":
+            measures = [(sub.text or "").strip().split(":")[-1]
+                        for sub in ctx.iter()
+                        if not callable(sub.tag)
+                        and etree.QName(sub).localname == "measure"]
+            units[ctx.get("id", "")] = measures[0] if measures else ""
+            continue
+        if ln != "context":
             continue
         instant = ""
         dims = []
         for sub in ctx.iter():
             if callable(sub.tag):
                 continue
-            ln = etree.QName(sub).localname
-            if ln in ("instant", "endDate") and sub.text:
+            ln2 = etree.QName(sub).localname
+            if ln2 in ("instant", "endDate") and sub.text:
                 instant = sub.text.strip()
-            elif ln == "explicitMember":
+            elif ln2 == "explicitMember":
                 axis = (sub.get("dimension") or "").split(":")[-1]
                 member = (sub.text or "").strip()
                 dims.append("%s=%s" % (axis, member))
         contexts[ctx.get("id", "")] = {"instant": instant,
                                        "dims": "|".join(sorted(dims))}
+    return root, contexts, units
 
-    facts = []
-    seen = set()
+
+def _iter_dei_nonfractions(root, localname):
+    """Every ix:nonFraction element whose name is dei:{localname}."""
+    from lxml import etree
+
     for el in root.iter():
         if callable(el.tag):
             continue
@@ -391,11 +404,24 @@ def parse_ixbrl_dei_facts(content_bytes):
         if ":" not in name:
             continue
         prefix, local = name.split(":", 1)
-        if local != SHARES_FACT_LOCALNAME:
+        if local != localname:
             continue
-        ns = el.nsmap.get(prefix, "")
-        if not ns.startswith(DEI_NS_PREFIX):
+        if not el.nsmap.get(prefix, "").startswith(DEI_NS_PREFIX):
             continue
+        yield el
+
+
+def parse_ixbrl_dei_facts(content_bytes):
+    """Every dei:EntityCommonStockSharesOutstanding fact tagged in an inline-
+    XBRL document, with its as-of instant and dimension members (share-class
+    axis, legal-entity axis, ...). Returns a list of dicts, deduped; empty
+    list when the document has no inline XBRL or no such facts."""
+    root, contexts, _ = _ixbrl_root_contexts_units(content_bytes)
+    if root is None:
+        return []
+    facts = []
+    seen = set()
+    for el in _iter_dei_nonfractions(root, SHARES_FACT_LOCALNAME):
         value = _ix_fact_value(el)
         if value is None or value < 0 or value != int(value):
             continue
@@ -406,6 +432,39 @@ def parse_ixbrl_dei_facts(content_bytes):
         seen.add(key)
         facts.append({"value": int(value), "instant": ctx["instant"],
                       "dims": ctx["dims"]})
+    return facts
+
+
+def parse_ixbrl_float_facts(content_bytes):
+    """Every dei:EntityPublicFloat fact tagged in an inline-XBRL document,
+    with its as-of instant, dimension members, and currency unit. Monetary
+    semantics differ from the shares fact: zero is a meaningful value (shells
+    and wholly-owned registrants), sub-dollar precision is kept, and an
+    explicit xsi:nil fact — the filer stating no determinable float — is
+    returned with value "" so the signal isn't lost. Negative values are
+    discarded as tagging errors. Returns a list of dicts, deduped."""
+    root, contexts, units = _ixbrl_root_contexts_units(content_bytes)
+    if root is None:
+        return []
+    facts = []
+    seen = set()
+    for el in _iter_dei_nonfractions(root, FLOAT_FACT_LOCALNAME):
+        if el.get("{http://www.w3.org/2001/XMLSchema-instance}nil") == "true":
+            value_str = ""
+        else:
+            value = _ix_fact_value(el)
+            if value is None or value < 0:
+                continue
+            value_str = ("%d" % value) if value == int(value) \
+                else format(value, "f")
+        ctx = contexts.get(el.get("contextRef", ""), {"instant": "", "dims": ""})
+        unit = units.get(el.get("unitRef", ""), "")
+        key = (value_str, ctx["instant"], ctx["dims"], unit)
+        if key in seen:
+            continue
+        seen.add(key)
+        facts.append({"value": value_str, "instant": ctx["instant"],
+                      "dims": ctx["dims"], "unit": unit})
     return facts
 
 
