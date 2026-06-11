@@ -78,6 +78,34 @@ override entries).
 For 2026: set `year = 2026` in scripts 1–7, run in order; the tier-2/3
 process re-runs only for whatever the new year's XBRL can't settle.
 
+## 2026-06-11 (later) — PLDT pairing defect: diagnosis and systemic fix
+
+Evan caught a value-to-class rotation in PLDT's 20-F: all three counts right,
+each attributed to the previous class's label. Two root causes, both fixed:
+
+1. **Binding**: in number-first lists ("216,055,775 shares of Common Capital
+   Stock"), the noun regex matched mid-phrase and the qualifier word in the
+   gap defeated after-binding, so the previous line's noun won. The binds
+   test now accepts gaps of "shares of" + the phrase's own qualifiers, rate
+   tokens (6.50%), or same-line brand words (Petrobras); the class-led noun
+   accepts Units; SPAC "N units, each unit..." binds the adjacent unit noun;
+   "per share" bares are never class nouns; digit-hyphen-digit file numbers
+   no longer condemn "Stock-2,563,034" (a round-4 rule had silently killed
+   Molson); space-grouped numbers displace their own fragments (Nokia).
+2. **Verification blindness**: tier-2 reconciliation had compared value SETS,
+   so rotations passed "confirmation". Two pairing censuses now run as
+   permanent assertions: (a) every row's share_type vs the filer's own
+   dimension member (0 contradictions; types auto-corrected from members,
+   TYPE_FROM_XBRL); (b) extraction (value→type) pairs vs both blind reads.
+   The override-prune rule also no longer drops label-disambiguating entries.
+
+Re-ruled after the rework: 23 residual filings + 14 label collisions (sonnet,
+folded into overrides). Closing Opus pairing audit (7th of the ≤10 budget):
+**30/30 multi-class filings PASS, 85/85 rows correctly paired** — including
+PLDT, Liberty Media's tracking-stock matrix, KKR's nine classes, AEP's seven
+registrants. Final: 8,412 rows / 6,771 filings / 0 unresolved /
+byte-identical rebuilds.
+
 All 6,825 in-scope primary documents fetched and cached (24 GB raw → 1.7 GB
 gzipped, 0 failures). Extractor + inline-XBRL parser built and iterated
 against the full-population XBRL signal — the validation ladder working as

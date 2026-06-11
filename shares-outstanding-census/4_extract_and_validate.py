@@ -64,7 +64,7 @@ def fact_dims_maps(f):
     """Per-value class designator, class member name, and registrant from
     the filer's own dimension members — the authoritative attribution for
     ambiguous prose."""
-    cls, cls_name, reg = {}, {}, {}
+    cls, cls_name, cls_type, reg = {}, {}, {}, {}
     for _, fr in f.iterrows():
         v = int(fr["value"])
         for dim in (fr["dims"] or "").split("|"):
@@ -75,10 +75,21 @@ def fact_dims_maps(f):
                 if m:
                     cls.setdefault(v, (m.group(1) or m.group(2)))
                 cls_name.setdefault(v, _pretty(member))
+                low = member.lower()
+                if "preferred" in low or "preference" in low:
+                    cls_type.setdefault(v, "preferred")
+                elif "depositary" in low or low.startswith("ads"):
+                    cls_type.setdefault(v, "depositary")
+                elif "ordinary" in low:
+                    cls_type.setdefault(v, "ordinary")
+                elif "common" in low:
+                    cls_type.setdefault(v, "common")
+                elif "unit" in low:
+                    cls_type.setdefault(v, "unit")
             elif dim.startswith("LegalEntityAxis="):
                 member = dim.split("=", 1)[1].split(":")[-1]
                 reg.setdefault(v, _pretty(member))
-    return cls, cls_name, reg
+    return cls, cls_name, cls_type, reg
 
 # secondary XBRL source: SEC's companyconcept API (joined by accession);
 # used only where the filing's own inline XBRL yielded no facts
@@ -160,7 +171,7 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
     # attribution repairs from the filer's own dimension members + tagged
     # instants: ambiguous duplicate labels, missing registrants, blank dates
     if f is not None and len(f) and "dims" in f.columns:
-        cls_map, cls_name_map, reg_map = fact_dims_maps(f)
+        cls_map, cls_name_map, cls_type_map, reg_map = fact_dims_maps(f)
         seen_labels = {}
         for r in rows:
             seen_labels.setdefault(
@@ -181,6 +192,16 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
                                      r["label"]) else r["label"]
                     r["class_designator"] = mem_desig
                     r["flags"].append("CLASS_FROM_XBRL")
+            # the filer's member TYPE outranks a prose-derived type — a row
+            # whose value is tagged preferred can't be a common-stock row
+            mem_type = cls_type_map.get(v, "")
+            if mem_type and r["share_type"] != mem_type and not (
+                    {r["share_type"], mem_type} <= {"common", "ordinary"}):
+                r["share_type"] = mem_type
+                if cls_name_map.get(v) and \
+                        cls_name_map[v].lower() not in r["label"].lower():
+                    r["label"] = cls_name_map[v]
+                r["flags"].append("TYPE_FROM_XBRL")
             # duplicate labels with distinct tagged member names: append the
             # filer's own member name so the classes stay distinguishable
             if key in ambiguous and cls_name_map.get(v) and \

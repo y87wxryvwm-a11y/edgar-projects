@@ -49,7 +49,8 @@ _NOUN_CORE = re.compile(r"""(?ix)
         class\s+[a-z0-9]{1,4}\s+
             (?:(?:exchangeable|common|ordinary|preferred|preference|special|
                 convertible|redeemable|cumulative|voting|non[\s-]?voting|
-                subordinate|multiple|limited)\s+){0,3}(?:stock|shares?) |
+                subordinate|multiple|limited|perpetual)\s+){0,4}
+            (?:stock|shares?|units?) |
         common\s+stock | common\s+shares? | ordinary\s+shares? |
         preferred\s+stock | preferred\s+shares? | preference\s+shares? |
         capital\s+stock | capital\s+shares? | equity\s+shares? |
@@ -301,6 +302,10 @@ def _nearest_noun(text, num_start, num_end, reach=120):
         if dist > reach:
             continue
         if m.group(1).lower() in _BARE_NOUNS:
+            # "par value per share" — a bare noun in a per-share phrase is
+            # never a class noun
+            if re.search(r"(?i)\bper\s+$", text[max(0, m.start() - 6):m.start()]):
+                continue
             if dist <= 40 and (bare_best is None or dist < bare_best[0]):
                 bare_best = (dist, m)
         elif after:
@@ -317,11 +322,38 @@ def _nearest_noun(text, num_start, num_end, reach=120):
             r"(?is)\s*(?:shares?\s+of\s+(?:the\s+)?"
             r"(?:registrant|company|issuer)\W{0,3}s\s+|shares?\s+of\s+|of\s+)?",
             gap_text) is not None
+        if not binds:
+            # "216,055,775 shares of Common Capital Stock" / "10,300 Series B
+            # preferred shares" / "5,446,501,379 Petrobras Common Shares" /
+            # "7,360,000 6.50% Class A ... Units" — the noun match starts
+            # mid-phrase and the gap holds the phrase's own qualifiers, rate,
+            # or the issuer's brand name; that still binds. Any other word in
+            # the gap means the noun is not this number's.
+            m2 = re.fullmatch(r"(?is)\s*(?:shares?\s+of\s+(?:the\s+)?)?"
+                              r"((?:[\w'.%-]+\s+){0,4})", gap_text)
+            if m2:
+                raw_words = m2.group(1).split()
+                words = [w.lower().strip(",.;:'") for w in raw_words]
+                binds = bool(words) and all(
+                    w in _QUALIFIER_WORDS or
+                    re.fullmatch(r"[a-z0-9]{1,4}", w) or
+                    re.fullmatch(r"\d+(?:\.\d+)?%", w) or
+                    ("\n" not in gap_text and rw[:1].isupper())
+                    for w, rw in zip(words, raw_words))
         if "\n" in gap_text and not \
                 strong_after[1].group(1).lower().startswith("share"):
             binds = False
     if strong_after and binds:
         return strong_after[1]
+    # "29,707 units, each unit consisting of ..." — an adjacent unit noun
+    # outranks a strong share noun sitting in a different phrase far away;
+    # restricted to units (an adjacent bare "shares" is usually a fragment
+    # of someone else's sentence)
+    if bare_best and bare_best[0] <= 2 and \
+            bare_best[1].group(1).lower() in ("unit", "units") and \
+            not (strong_before and strong_before[0] <= 25) and \
+            not (strong_after and strong_after[0] <= 25):
+        return bare_best[1]
     if strong_before:
         return strong_before[1]
     if strong_after:
@@ -384,8 +416,13 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
             return
         if text[end:end + 1] == "/" or text[max(0, start - 1):start] == "/":
             return                            # component of a 3/20/2025 date
-        if text[end:end + 1] == "-" or text[max(0, start - 1):start] == "-":
-            return                            # commission file numbers (1-10257)
+        # commission file numbers (1-10257): digits hyphenated to digits —
+        # but "Class A Common Stock-2,563,034" keeps its number
+        if text[end:end + 1] == "-" and text[end + 1:end + 2].isdigit():
+            return
+        if text[max(0, start - 1):start] == "-" and \
+                text[max(0, start - 2):start - 1].isdigit():
+            return
         if _decoy(text, start, end):
             return
         value = _num_value(num_text, scale_word)
@@ -456,7 +493,10 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
         consider(m.start(), m.end(), m.group(1), m.group(2), [])
     if allow_space_groups:
         for m in _NUM_SPACED_RE.finditer(text, lo, pad_hi):
-            if m.start() < hi and m.start() not in out:
+            if m.start() < hi:
+                # a plain-number fragment ("5" of "5 605 850 345") may have
+                # claimed this position — the full spaced number displaces it
+                out.pop(m.start(), None)
                 consider(m.start(), m.end(), m.group(1).replace(" ", ""),
                          None, ["SPACE_GROUPED_NUMBER"])
     return out
