@@ -128,6 +128,15 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
         for r in rows:
             if r["xbrl"] == "XBRL_MISMATCH":
                 r["xbrl"] = "XBRL_NOT_COVERED"
+    elif rows and fact_values and n_match == len(rows) and \
+            all(v == sum(matched_values) or
+                v == sum(r["value"] for r in rows if r["share_type"] not in
+                         ("preferred", "depositary"))
+                for v in fact_values if v not in matched_values):
+        # the only unmatched facts are the filer's tagged TOTAL of the very
+        # rows we extracted (we drop cross-class total rows by design)
+        status = "VALIDATED"
+        filing_flags.append("FACTS_INCLUDE_TOTAL")
     elif rows and fact_values and n_match == len(rows):
         # every prose row is confirmed but the filer tagged MORE facts —
         # exactly how a missed share class hides; never auto-validated

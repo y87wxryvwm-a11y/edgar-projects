@@ -145,8 +145,11 @@ def _decoy(text, start, end):
             re.search(r"(?i)^\s*(?:shares?\s+)?(?:held\s+in|of|in)?\s*treasury\b", post):
         return "TREASURY"
     # carve-outs: "including N shares held by ..." / "excluding N shares ..."
+    # — but "TOTAL, including N Class A ... and M Class B ..." introduces the
+    # per-class breakdown we want; a Class/Series-led phrase stays a candidate
     if re.search(r"(?i)\b(?:includ(?:ing|es)|exclud(?:ing|es)|exclusive\s+of|"
-                 r"after\s+deducting|net\s+of)\s*$", pre):
+                 r"after\s+deducting|net\s+of)\s*$", pre) and not \
+            re.match(r"(?i)\s*(?:class|series)\s+[a-z0-9]", post):
         return "SUBSET"
     # derivative counts ("4,018,384 Warrants to purchase ...") — but only
     # when the derivative word is what the number binds to; "59,888,304
@@ -158,6 +161,19 @@ def _decoy(text, start, end):
     if re.search(r"(?i)\b(?:section|rule)\s*$", pre) or \
             re.match(r"\s*\(\s*[a-z]\d?\s*\)", post):
         return "STATUTE_REF"                 # the 12 in "Section 12(b)"
+    if re.search(r"(?i)\bfile\s+(?:number|no\.?)\s*:?\s*$", pre):
+        return "FILE_NUMBER"
+    # ownership breakdowns ("19,222,141 held by the ESOP and ...") and
+    # carve-outs the cover itself excludes from the outstanding count
+    if re.match(r"(?i)\s*(?:shares?\s+)?(?:are\s+|were\s+)?held\s+by\b",
+                post) and not re.match(r"(?i)\s*(?:shares?\s+)?(?:are\s+|were\s+)?"
+                                       r"held\s+by\s+non", post):
+        return "HELD_BY_BREAKDOWN"
+    if re.search(r"(?i)\breserved\s+for\b", post[:60]) or \
+            re.search(r"(?i)^\s*(?:shares?\s+)?(?:repurchased|reserved)\b", post):
+        return "RESERVED"
+    if re.search(r"(?i)\brepurchased\s*$", pre):
+        return "RESERVED"
     if re.search(r"(?i)(?:january|february|march|april|may|june|july|august|"
                  r"september|october|november|december)\.?\s*$", pre):
         return "DATE_DAY"                    # the 17 in "October 17, 2025"
@@ -339,6 +355,8 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
             return                            # bare decimals are ratios/prices
         if text[end:end + 1] == "/" or text[max(0, start - 1):start] == "/":
             return                            # component of a 3/20/2025 date
+        if text[end:end + 1] == "-" or text[max(0, start - 1):start] == "-":
+            return                            # commission file numbers (1-10257)
         if _decoy(text, start, end):
             return
         value = _num_value(num_text, scale_word)
@@ -388,11 +406,16 @@ def _scan_candidates(text, lo, hi, allow_space_groups=False):
             "class_designator": desig, "pos": start, "flags": flags,
         }
 
-    for m in _NUM_RE.finditer(text, lo, hi):
+    # pad the regex region so a number straddling the window edge completes
+    # instead of being clipped mid-digits; matches must still START inside
+    pad_hi = min(len(text), hi + 30)
+    for m in _NUM_RE.finditer(text, lo, pad_hi):
+        if m.start() >= hi:
+            continue
         consider(m.start(), m.end(), m.group(1), m.group(2), [])
     if allow_space_groups:
-        for m in _NUM_SPACED_RE.finditer(text, lo, hi):
-            if m.start() not in out:
+        for m in _NUM_SPACED_RE.finditer(text, lo, pad_hi):
+            if m.start() < hi and m.start() not in out:
                 consider(m.start(), m.end(), m.group(1).replace(" ", ""),
                          None, ["SPACE_GROUPED_NUMBER"])
     return out
@@ -411,6 +434,37 @@ def _dedupe_rows(cands):
         if key not in seen:
             seen[key] = c
     return sorted(seen.values(), key=lambda c: c["pos"])
+
+
+_COLON_BOUND_RE = re.compile(
+    r"(?i)\bnumber\s+of\s+([^\n:]{3,90}?)\s+(?:issued\s+and\s+)?outstanding\b"
+    r"[^:\n]{0,80}:\s*\$?\s*(\d[\d,]*)")
+
+
+def _colon_bound_candidates(text, lo, hi):
+    """ "Number of Shares of the registrant outstanding as of <date>: N" —
+    the count follows a colon at the end of the phrase, too far from its
+    noun for proximity rules. The phrase IS the binding."""
+    out = {}
+    for m in _COLON_BOUND_RE.finditer(text, lo, hi):
+        raw = m.group(2).rstrip(",")
+        if not raw or "," not in raw and len(raw) > 9:
+            continue
+        value = int(raw.replace(",", ""))
+        if value <= 0:
+            continue
+        label = re.sub(r"\s+", " ", m.group(1)).strip(" ,.;:")
+        share_type, desig = classify_label(label)
+        if share_type == "other" and not re.search(
+                r"(?i)\bshares?\b|\bstock\b|\bunits?\b", label):
+            continue
+        num_start = m.start(2)
+        out[num_start] = {
+            "value": value, "label": label, "share_type": share_type,
+            "class_designator": desig, "pos": num_start,
+            "flags": ["COLON_BOUND"],
+        }
+    return out
 
 
 def _drop_superseded(rows):
@@ -441,7 +495,9 @@ def _drop_weak_total(rows):
     for i, r in enumerate(rows):
         others = [x for j, x in enumerate(rows) if j != i]
         weak = r["label"].lower() in _BARE_NOUNS or "total" in r["label"].lower() \
-            or any(x["label"].lower() == r["label"].lower() for x in others)
+            or any(x["label"].lower() == r["label"].lower() for x in others) \
+            or (not r["class_designator"] and
+                all(x["class_designator"] for x in others))
         if weak and r["value"] == sum(x["value"] for x in others):
             return others
     return rows
@@ -453,7 +509,9 @@ _PART_I_RE = re.compile(r"(?m)(?:^\s*PART\s+I\b[.:]?\s*$|^\s*PART\s+I\b\s*-)")
 
 _REG_TABLE_HEADER_RE = re.compile(
     r"(?is)number\s+of\s+shares\s+of\s+common\s+stock\s*\n?\s*outstanding"
-    r"(?:\s+of\s+the\s+registrants?)?")
+    r"(?:\s+of\s+the\s+registrants?)?"
+    r"|number\s+of\s+shares\s+outstanding\s+of\s+each\s+registrant\W{0,3}s?"
+    r"\s+classes\s+of\s+common\s+stock")
 _PURE_NUM_RE = re.compile(r"\$?\s*(\d{1,3}(?:,\d{3})+|\d+)\s*$")
 
 
@@ -470,14 +528,18 @@ def _extract_registrant_table(cover):
     seg = cover[hm.end():hm.end() + (stop.start() if stop else len(cover))]
 
     header_dates, rows = [], []
-    cur_name, nums = None, []
+    cur_name, cur_label, nums = None, "", []
 
     def flush():
         if cur_name and nums:
             name = re.sub(r"\s*\([a-z]\)\s*$", "", cur_name).strip()
+            label = re.sub(r",?\s*(?:\$[\d.]+\s+par\s+value.*|no\s+par\s+"
+                           r"value.*|par\s+value.*)$", "", cur_label,
+                           flags=re.I).strip(" ,") or "common stock"
+            share_type, desig = classify_label(label)
             rows.append({
-                "value": nums[-1], "label": "common stock",
-                "share_type": "common", "class_designator": "",
+                "value": nums[-1], "label": label,
+                "share_type": share_type, "class_designator": desig,
                 "registrant": name, "pos": hm.start(),
                 "flags": ["REGISTRANT_TABLE"],
             })
@@ -496,14 +558,20 @@ def _extract_registrant_table(cover):
             continue
         if l.startswith("("):
             continue                       # par-value notes, footnotes
+        if re.match(r"(?i)^(?:registrant|title\s+of\s+each\s+class|shares)\b"
+                    r"[^\d]*$", l):
+            continue                       # column headers
         nm = _PURE_NUM_RE.fullmatch(l)
         if nm:
             if not l.lstrip().startswith("$"):
                 nums.append(int(nm.group(1).replace(",", "")))
             continue
+        if _NOUN_CORE.match(l):
+            cur_label = l                  # the class-title line of this row
+            continue
         if re.search(r"[A-Za-z]{3}", l):
             flush()
-            cur_name, nums = l, []
+            cur_name, cur_label, nums = l, "", []
     flush()
 
     rows = [r for r in rows if r["value"] > 0]
@@ -532,7 +600,11 @@ def _extract_10k(text, multi_registrant=False):
             cover = text[:15000]
             flags.append("COVER_CAPPED")
     else:
-        cover = text[:15000]
+        # no PART I heading (reduced-format subsidiaries) — end the cover at
+        # the next structural marker so body tables can't leak in
+        e = re.search(r"(?im)documents\s+incorporated\s+by\s+reference|"
+                      r"^\s*table\s+of\s+contents\s*$", text[:15000])
+        cover = text[:e.end() + 200] if e else text[:15000]
         flags.append("NO_COVER_MARKERS")
 
     if multi_registrant:
@@ -546,6 +618,8 @@ def _extract_10k(text, multi_registrant=False):
     for om in re.finditer(r"(?i)\boutstanding\b", cover):
         lo, hi = max(0, om.start() - 400), min(len(cover), om.end() + 400)
         cands.update(_scan_candidates(cover, lo, hi))
+    for pos, c in _colon_bound_candidates(cover, 0, len(cover)).items():
+        cands.setdefault(pos, c)
     for c in cands.values():
         c["as_of"] = _nearest_date(cover, c["pos"])
     rows = _drop_weak_total(_dedupe_rows(cands))
@@ -590,15 +664,37 @@ def _extract_fpi(text, period_of_report):
         if am:
             flags.append("LOOSE_ANCHOR")
     if not am:
+        # no regulatory anchor — some covers state the count free-form
+        # ("On September 30, 2024, the issuer had N shares outstanding.")
         flags.append("ANCHOR_NOT_FOUND")
-        return [], flags
+        cands = {}
+        scan_hi = min(len(head), 20000)
+        for om in re.finditer(r"(?i)\boutstanding\b", head[:scan_hi]):
+            lo, hi = max(0, om.start() - 400), min(scan_hi, om.end() + 400)
+            cands.update(_scan_candidates(head, lo, hi, allow_space_groups=True))
+        for pos, c in _colon_bound_candidates(head, 0, scan_hi).items():
+            cands.setdefault(pos, c)
+        rows = _drop_weak_total(_dedupe_rows(cands))
+        rows = [r for r in rows if not re.search(
+            r"(?i)\b(treasury|warrant|option)\b", r["label"])]
+        for r in rows:
+            r["as_of"] = _nearest_date(head, r["pos"])
+            r["method"] = "FPI_FREEFORM"
+            r["flags"].append("FPI_FREEFORM")
+            if not r["as_of"]:
+                r["flags"].append("NO_DATE")
+        if not rows:
+            flags.append("NO_MATCH")
+        if len(rows) > 1:
+            flags.append("MULTI_CLASS")
+        return rows, flags
 
     win_lo = am.end()
     nm = _NEXT_ITEM_RE.search(head, win_lo)
     win_hi = min(nm.start() if nm else win_lo + 3000, win_lo + 3000)
 
     cands = _scan_candidates(head, win_lo, win_hi, allow_space_groups=True)
-    rows = _dedupe_rows(cands)
+    rows = _drop_weak_total(_dedupe_rows(cands))
 
     # numbers whose label betrays a non-class line item
     rows = [r for r in rows if not re.search(
@@ -625,10 +721,23 @@ def _extract_fpi(text, period_of_report):
 
 # -------------------------------------------------------------- entry point
 
+def _repair_text(text):
+    """Two glue repairs observed across many filings:
+    - sentence-glued numbers: "...annual report.281,382,906 Class B..." —
+      a period directly between a letter and a digit gets a space;
+    - footnote-glued counts: "12,000,0002" (footnote 2 fused onto
+      12,000,000) — a 1-2 digit tail that breaks the comma grouping is
+      stripped."""
+    text = re.sub(r"(?<=[A-Za-z])\.(?=\d)", ". ", text)
+    text = re.sub(r"(\d{1,3}(?:,\d{3})+)(\d{1,2})(?=[^\d,]|$)", r"\1", text)
+    return text
+
+
 def extract_cover(text, form, period_of_report="", multi_registrant=False):
     """(rows, filing_flags) for one filing's clean text. Each row:
     value, label, share_type, class_designator, as_of, method, flags, and
     registrant (non-empty only for multi-registrant cover tables)."""
+    text = _repair_text(text)
     if form == "10-K":
         rows, flags = _extract_10k(text, multi_registrant)
     else:
