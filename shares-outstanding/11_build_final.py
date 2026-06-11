@@ -17,10 +17,32 @@ Run after 2_extract.py and 8_check_golden.py.
 """
 
 import os
+import re
 import csv
 import json
 
 from shares_lib import class_designator
+
+# fallback labels are cover-sentence fragments; strip leading instruction
+# words ("the number of outstanding …") and an absorbed issuer name ("BHP
+# Group Limited ordinary shares") down to the class name itself
+_JUNK_PREFIX = re.compile(
+    r"^(?:(?:outstanding|the|number|of|registrant'?s?|issuer'?s?|company'?s?|"
+    r"its|their|classes|capital|or|table|contents|each|class(?=\s+of\b))\s+)+", re.I)
+
+
+_NAME_ALIAS = {"ltd": "limited", "inc": "incorporated", "corp": "corporation",
+               "co": "company", "plc": "plc"}
+
+
+def tidy_label(label, company):
+    s = re.sub(r"\s+", " ", label).strip().lower()
+    for t in [t for t in re.split(r"[^\w]+", company.lower()) if t]:
+        for v in (t, _NAME_ALIAS.get(t, t)):
+            if s.startswith(v + " "):
+                s = s[len(v) + 1:]
+                break
+    return _JUNK_PREFIX.sub("", s)
 
 # ---- EDIT THIS --------------------------------------------------------------
 YEAR = 2025
@@ -87,11 +109,11 @@ def main():
         for e in entries:
             n_classes += 1
             # bare designator ("AX", "JX"); a class with no designator keeps
-            # its label (lowercased so cover-page casing doesn't vary row to
-            # row) so multi-class rows stay distinguishable
+            # its tidied label so multi-class rows stay distinguishable
             label = e.get("class_label", "")
             rows.append({**base, "shares": e.get("shares", ""),
-                         "share_class": class_designator(label) or label.lower(),
+                         "share_class": class_designator(label) or
+                                        tidy_label(label, s["company"]),
                          "share_type": e.get("share_type", ""),
                          "as_of_date": e.get("as_of_date", "")})
 

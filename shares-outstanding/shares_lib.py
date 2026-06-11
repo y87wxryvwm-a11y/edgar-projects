@@ -476,8 +476,9 @@ _COMMA_SPLIT_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+)\s(\d{3})(?![\d.])"
 # on these exact words.
 _KW_SPLIT_RES = [
     (kw, [re.compile(rf"\b{kw[:k]}\s+{kw[k:]}\b", re.I)
-          for k in range(2, len(kw))])
-    for kw in ("outstanding", "class", "series", "shares")
+          for k in range(1, len(kw))])
+    for kw in ("outstanding", "class", "series", "shares",
+               "ordinary", "common", "preferred", "voting")
 ]
 
 
@@ -604,10 +605,13 @@ def _nearest_date(text, pos, window=260):
     return best
 
 
-_CLASS_TAIL = (r"(?:(?:Class|Series)\s+[A-Z0-9]{1,3}(?:-[A-Z0-9]{1,3})?\b[\w ]*?)?(?:Common\s+Stock|Common\s+Shares|"
+_CLASS_TAIL = (r"(?:(?:Class|Series)\s+[A-Z0-9]{1,3}(?:-[A-Z0-9]{1,3})?\b[\w \n]{0,40}?)?"
+               r"(?:(?:Non-?Voting|Special|Subordinate|Multiple|Super|Proportionate|"
+               r"Restricted|Deferred|LT\d{1,3})\s+)*"
+               r"(?:Common\s+Stock|Common\s+Shares|"
                r"Ordinary\s+Shares|Preferred\s+Stock|Preference\s+Shares|"
                r"Redeemable\s+Capital\s+Shares|Limited\s+Voting\s+Shares|"
-               r"Subordinate\s+Voting\s+Shares|Capital\s+Stock|Common\s+Units|"
+               r"Subordinate\s+Voting\s+Shares|Voting\s+Shares?|Capital\s+Stock|Common\s+Units|"
                r"Stock|Shares|Units)")
 
 
@@ -616,6 +620,21 @@ def _grab_class_label(text, num_start, num_end):
     'shares of <CLASS>' construction (Apple/Alphabet); otherwise take the
     nearest 'Class X ...' or class keyword before the number (Amerant)."""
     post = text[num_end:num_end + 110]
+    # paired lists: "Class A common stock and Class B common stock … was N1 and
+    # N2, respectively" — the k-th number takes the k-th label
+    lo = max(0, num_start - 240)
+    back = text[lo:num_end + 60]
+    off = num_start - lo
+    pr = re.search(
+        r"((?:Class|Series)\s+[A-Z0-9]{1,3}\b[\w \n]{0,30}?(?:stock|shares?))\s+and\s+"
+        r"((?:Class|Series)\s+[A-Z0-9]{1,3}\b[\w \n]{0,30}?(?:stock|shares?))"
+        r"[^.;]{0,90}?\b(?:was|were|:)\s*([\d,]+)\s+and\s+([\d,]+)\s*,?\s+respectively",
+        back, re.I)
+    if pr:
+        if pr.start(3) <= off < pr.end(3):
+            return re.sub(r"\s+", " ", pr.group(1)).strip()
+        if pr.start(4) <= off < pr.end(4):
+            return re.sub(r"\s+", " ", pr.group(2)).strip()
     # "N [(parenthetical)] [outstanding] shares of [the registrant's] <CLASS>" —
     # tolerates the split-word artifact "o f" and an intervening "outstanding"
     m = re.match(r"[\s,]*(?:\([^)]{0,60}\)\s*)?(?:thousand|million|billion)?\s*"
@@ -625,10 +644,12 @@ def _grab_class_label(text, num_start, num_end):
     if m:
         return re.sub(r"\s+", " ", m.group(1)).strip()
     pre = text[max(0, num_start - 110):num_start]
-    pm = list(re.finditer(r"((?:Class|Series)\s+[A-Z0-9]{1,3}(?:-[A-Z0-9]{1,3})?\b[\w ]*?(?:Common\s+Stock|Common\s+Shares|"
+    pm = list(re.finditer(r"((?:Class|Series)\s+[A-Z0-9]{1,3}(?:-[A-Z0-9]{1,3})?\b[\w \n]{0,40}?(?:Common\s+Stock|Common\s+Shares|"
                           r"Preferred\s+Stock|Stock|Shares)|Common\s+Stock|Common\s+Shares|Ordinary\s+Shares|"
                           r"Preferred\s+Stock|Preference\s+Shares|Capital\s+Stock|"
-                          r"Redeemable\s+Capital\s+Shares|Limited\s+Voting\s+Shares)", pre, re.I))
+                          r"Redeemable\s+Capital\s+Shares|"
+                          r"(?:(?:Non-?Voting|Special|Subordinate|Multiple|Super|Proportionate)\s+)*"
+                          r"(?:Limited\s+|Subordinate\s+)?Voting\s+Shares?)", pre, re.I))
     # table-row layout: a STANDALONE class label right before the number (not
     # attached to its own preceding count) is this number's label — "Class B
     # Common Stock … (the "Class B Common Stock") 677,234 Class C Common Stock …"
@@ -640,8 +661,13 @@ def _grab_class_label(text, num_start, num_end):
     m2 = re.match(r"[\s,]*(?:\([^)]{0,60}\)\s*)?(?:thousand|million|billion)?\s*"
                   r"(?:o\s*f\s+(?:the\s+|its\s+|registrant'?s?\s+|company'?s?\s+|issuer'?s?\s+)+)?"
                   r"(" + _CLASS_TAIL + r")", post, re.I)
+    # a post label is trusted when it carries a designator OR a voting-tier
+    # qualifier ("167,779,554 Subordinate Voting Shares, …") — generic tails
+    # like the anchor preamble's own "common stock" stay untrusted
     post_label = re.sub(r"\s+", " ", m2.group(1)).strip() \
-        if m2 and class_designator(m2.group(1)) else ""
+        if m2 and (class_designator(m2.group(1)) or
+                   re.search(r"\b(?:non-?voting|subordinate|multiple|super|"
+                             r"proportionate|special|lt\d{1,3})\b", m2.group(1), re.I)) else ""
     if pm:
         before = pre[max(0, pm[-1].start() - 44):pm[-1].start()]
         attached = re.search(r"[\d,]{4,}\s*\)?\s*(?:(?:outstanding|issued)\s+)?(?:shares?\s+)?"
@@ -682,7 +708,7 @@ _ANCHOR_RE = re.compile(
     # variants seen in the corpus: "each of" omitted (some 40-Fs), "as at"
     # (Commonwealth English), "issuer ' s" (tag-boundary artifact), "classes of
     # capital or common shares"
-    r"number\s+of\s+outstanding\s+shares\s+of\s+(?:each\s+of\s+)?the\s+issuer\s*'?\s*s?\s+"
+    r"number\s+of\s+outstanding\s+shares\s+of\s+(?:each\s+of\s+)?the\s+(?:issuer|registrant)\s*'?\s*s?\s+"
     r"classes\s+of\s+(?:capital\s+stock\s+or\s+common|capital\s+or\s+common|capital|common)\s+(?:stock|shares)\s+as\s+(?:of|at)"
     r"[^:.]{0,200}?[:.]",  # newlines allowed: the date/colon often sits on the next line
     re.I,
@@ -761,7 +787,7 @@ def extract_anchor(text, period="", date_filed=""):
 # A class label = up to ~5 words ending in a class noun, optional Series suffix.
 # Case-insensitive so foreign filers' lowercase "ordinary shares" is captured too.
 _LABEL_PHRASE_RE = re.compile(
-    r"(?:(?:[A-Za-z][\w.&'/-]*|\"[A-Za-z0-9]{1,3}\"|'[A-Za-z0-9]{1,3}'|\d{1,2}(?:\.\d+)?%)\s+){0,7}?"
+    r"(?:(?:[A-Za-z][\w.&'/-]*|\"[A-Za-z0-9]{1,3}\"|'[A-Za-z0-9]{1,3}'|\d{1,2}(?:\.\d+)?(?:%|p\b))\s+){0,7}?"
     r"(?:ordinary\s+shares?|common\s+shares?|common\s+stock|preferred\s+stock|"
     r"preference\s+shares?|preferred\s+shares?|capital\s+stock|"
     # comma-list voting class names ("Subordinate, Restricted and Limited
@@ -777,7 +803,8 @@ _LABEL_PHRASE_RE = re.compile(
 _LABEL_AT_START_RE = re.compile(
     r"^(?:\.\d+\s*)?[\s,:]*(?:\([^)]{0,60}\)\s*)?(?:without\s+(?:nominal|par)\s+value[,:]?\s*)?"
     r"(?:thousand|million|billion)?\s*"
-    r"(?:shares?\s+of\s+(?:the\s+|its\s+|common\s+|registrant'?s?\s+|company'?s?\s+|issuer'?s?\s+)*)?"
+    r"(?:outstanding\s+)?"
+    r"(?:shares?\s+of\s+(?:the\s+|its\s+|registrant'?s?\s+|company'?s?\s+|issuer'?s?\s+)*)?"
     r"(" + _LABEL_PHRASE_RE.pattern + r")",
     re.I,
 )

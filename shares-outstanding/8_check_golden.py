@@ -9,6 +9,7 @@ filings still wrong) and prints a summary by failure kind and form.
 """
 
 import os
+import re
 import csv
 import json
 
@@ -92,14 +93,31 @@ def check(gold, ext_entries):
             if gt and et and gt != et and not ({gt, et} <= EQUITY):
                 return "FAIL_TYPE", f"{e}: ext={et} truth={gt}"
     if CHECK_LABEL:
-        g_lab = {c["number"]: class_designator(c.get("share_class", ""))
+        g_lab = {c["number"]: label_sig(c.get("share_class", ""))
                  for c in g_classes if c.get("number")}
-        e_lab = {x["shares"]: class_designator(x.get("class_label", ""))
+        e_lab = {x["shares"]: label_sig(x.get("class_label", ""))
                  for x in ext_entries if x.get("shares")}
         for a, e in pairs:
-            if g_lab.get(a, "") != e_lab.get(e, ""):
-                return "FAIL_LABEL", f"{e}: ext='{e_lab.get(e, '')}' truth='{g_lab.get(a, '')}'"
+            if g_lab.get(a) != e_lab.get(e):
+                return "FAIL_LABEL", f"{e}: ext='{e_lab.get(e)}' truth='{g_lab.get(a)}'"
     return "PASS", ""
+
+
+# label signature = designator + voting-tier qualifier set. Catches "Class B
+# labeled Class A" AND "Multiple Voting Shares labeled shares" — fossils where
+# both sides agree on a bare designator can't hide a wrong tier. "limited"/
+# "restricted" count only in voting-class names ("Limited Voting Shares"), not
+# in absorbed company names ("BHP Group Limited ordinary shares").
+_QUAL_RE = re.compile(
+    r"\b(non-?\s?voting|subordinate|multiple|super|proportionate|special|"
+    r"deferred|investment|founder|lt\d{1,3}|"
+    r"(?:restricted|limited)(?=(?:,?\s+\w+){0,3}?\s+voting))\b", re.I)
+
+
+def label_sig(label):
+    quals = frozenset(re.sub(r"[-\s]", "", q.lower())
+                      for q in _QUAL_RE.findall(label or ""))
+    return (class_designator(label), quals)
 
 
 def main():

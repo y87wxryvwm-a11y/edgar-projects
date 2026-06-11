@@ -22,6 +22,7 @@ import glob
 # ---- EDIT THIS --------------------------------------------------------------
 YEAR = 2025
 SAMPLE_SIZE = 1000
+RULINGS_SUBDIR = "audit/labels2/results"  # which adjudication round to fold in
 # -----------------------------------------------------------------------------
 
 try:
@@ -31,7 +32,7 @@ except ImportError:
 
 directory = DATA_DIR.replace("\\", "/")
 golden_json = os.path.join(directory, f"golden_{YEAR}_n{SAMPLE_SIZE}.json")
-rulings_dir = os.path.join(directory, "audit", "labels", "results")
+rulings_dir = os.path.join(directory, *RULINGS_SUBDIR.split("/"))
 
 
 def main():
