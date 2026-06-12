@@ -27,8 +27,15 @@ dataset by accession number.
 - **Every filing accounted for** — non-ABS filings with no share count (unit
   MLPs, fund LPs, debt-only issuers) keep their row with an explicit status
   rather than disappearing.
-- **One row per share class per filing**, with accession, CIK, company name,
-  and filing URL on every row.
+- **One row per share class per filing**, and each row belongs to exactly
+  one registrant: `cik` + `registrant` are the entity's **own** CIK and
+  EDGAR conformed name (in combined multi-registrant filings — utility
+  holding companies and their subsidiary co-filers in one 10-K — a
+  subsidiary row never carries the parent's CIK). `class_or_series` holds
+  below-registrant designations that aren't share classes (fund series,
+  tracking-stock groups); the class itself is `share_class_label` /
+  `share_type` / `class_designator`. Registrants and classes never share a
+  column.
 
 ## How the numbers are trusted (the validation ladder)
 
@@ -82,15 +89,22 @@ triangulation idea); its code and rulings are not imported.
 | `10_fetch_float_api.py` | SEC companyconcept API for `EntityPublicFloat` per CIK (cached, 404s included) → `float_api_facts_{year}.csv`, the secondary XBRL source. |
 | `11_build_float_evidence.py` | Blind evidence packets (cover text separated from extraction context) for whatever XBRL can't settle, plus negative-class samples — the input to the independent-read tiers. |
 | `13_fold_float_reads.py` | Folds the saved read/adjudication verdicts into review-ready override tables (merged into `float_overrides.py` only after adversarial verification). |
-| `12_build_final_float.py` | Deterministic assembly of `public_float_{year}.csv` (one row per filing; per registrant/class on combined filings; both the cover value and the tag value as filed) and `float_coverage_{year}.csv` (every filing accounted for). |
-| `14_check_float.py` | Assertion suite: coverage completeness, row integrity, and an implied-price cross-check against the shares-outstanding dataset (float ÷ shares must land in a sane band). |
+| `12_build_final_float.py` | Deterministic assembly of `public_float_{year}.csv` and `float_coverage_{year}.csv` (every filing accounted for). One row per disclosed float, per registrant on combined filings (each with its **own** CIK from the SGML header), per class/series where the cover breaks the value out. `public_float` is the single verified value with `float_basis` (STATED_VALUE / STATED_ZERO / STATED_NONE / RESOLVED_FILER_ERROR); the as-filed evidence stays in `public_float_cover` and `public_float_xbrl`. |
+| `14_check_float.py` | Assertion suite: coverage completeness, row integrity, registrant identity (every row's CIK among the filing's own header CIKs), basis consistency, an implied-price cross-check against the shares-outstanding dataset, and a >$5T scale screen. |
 
 The float disclosure is a 10-K cover requirement, so every 20-F/40-F resolves
 to an explicit no-disclosure status rather than a missing row; so do shell
-and wholly-owned 10-K filers. Filer-side oddities are reported as filed but
-flagged (`IMPLAUSIBLE_AS_FILED`, `AS_FILED_MICRO_VALUE`, `IMPLAUSIBLE_DATE`).
+and wholly-owned 10-K filers. A cover that prints "None"/$0 for a registrant
+is a row (`STATED_NONE`/`STATED_ZERO` — a stated zero float, the norm for
+wholly-owned utility co-filers); a cover that says nothing is not. Filer-side
+oddities are reported as filed but flagged (`AS_FILED_MICRO_VALUE`,
+`IMPLAUSIBLE_DATE`, `FLOAT_EQUALS_STATED_PRICE`); values implausible in
+*both* as-filed expressions go through a logged web plausibility smoke test,
+and where the filing itself recovers the true reading the row carries it as
+`public_float` under `RESOLVED_FILER_ERROR` (see `float_overrides.py` for
+the full record).
 
-**2025 result:** 5,132 float rows across 5,069 filings; all 7,650 population
+**2025 result:** 5,134 float rows across 5,069 filings; all 7,650 population
 filings accounted for (1,753 explicit no-disclosure, 825 ABS-excluded);
 95.9% of rows validated by the filer's own XBRL, the rest by two-blind-read
 confirmation or audited overrides; two independent Opus audits (full + delta)
@@ -99,13 +113,14 @@ passed; byte-identical across rebuilds.
 `overrides.py` is the committed record of every filing whose rows don't come
 from the extractor alone — confirmations, no-disclosure filings, and
 hand-verified overrides, each with provenance; `float_overrides.py` is its
-public-float counterpart. `METHODOLOGY.md` is the plain-English account of
-how every number was produced and verified.
+public-float counterpart, and `entity_aliases.py` maps the few cover
+abbreviations ("OG&E", "EIDP") to their registrants' CIKs. `METHODOLOGY.md`
+is the plain-English account of how every number was produced and verified.
 
-**2025 result:** 8,410 share-class rows across 6,771 filings; all 7,650
-population filings accounted for; 94.1% of rows validated by the filer's own
-XBRL, the rest by independent multi-model reads or audited overrides;
-byte-identical across rebuilds.
+**2025 result:** 8,414 share-class rows across 6,771 filings; all 7,650
+population filings accounted for; 95.3% of rows validated by the filer's own
+XBRL (exact or per-class aggregation), the rest by independent multi-model
+reads or audited overrides; byte-identical across rebuilds.
 
 `census_lib.py` is the shared engine; `cover_extractor.py` is the documented
 extraction methodology (every rule a general property of how filings are

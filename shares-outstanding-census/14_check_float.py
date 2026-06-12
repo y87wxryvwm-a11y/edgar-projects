@@ -5,14 +5,22 @@ Checks:
 1. Coverage completeness — every population filing appears exactly once in
    float_coverage, no UNRESOLVED rows remain.
 2. Row integrity — every public_float row's accession is in the population,
-   values parse as nonnegative numbers, dates are ISO and not after the
-   filing date by more than a few days.
-3. Cross-dataset sanity — joined to shares_outstanding_{year}.csv (the
-   shares census), implied per-share price = float / total shares must land
-   in a sane band; violations are listed for review (soft).
-4. Scale sanity — cover floats above $5T are listed (nothing but the very
-   largest issuers should ever approach this; a violation usually means a
-   scale error survived).
+   public_float / public_float_cover parse as nonnegative numbers, dates are
+   ISO and not after the filing date.
+3. Registrant identity — every row has a nonempty registrant; every row's
+   cik is one of the accession's own header CIKs (population all_ciks);
+   no ENTITY_LABEL_UNMATCHED rows remain.
+4. Basis consistency — float_basis is one of the documented values;
+   public_float == 0 exactly when basis is STATED_NONE / STATED_ZERO;
+   RESOLVED_FILER_ERROR rows are OVERRIDE_VERIFIED (their provenance lives
+   in float_overrides.py).
+5. Cross-dataset sanity — joined to shares_outstanding_{year}.csv (the
+   shares census), implied per-share price = public_float / total shares
+   must land in a sane band; violations are listed for review (soft —
+   every current one is verified genuine-as-filed; see the plausibility
+   smoke-test record in float_overrides.py).
+6. Scale sanity — consolidated floats above $5T are listed (a violation
+   means a scale error survived the smoke test).
 """
 
 # ---- EDIT THIS --------------------------------------------------------------
@@ -57,11 +65,14 @@ pop_accs = set(pop["accession"])
 bad = pf[~pf["accession"].isin(pop_accs)]
 if len(bad):
     hard_fail.append("%d rows with accession outside population" % len(bad))
-vals = pd.to_numeric(pf["public_float_cover"], errors="coerce")
+vals = pd.to_numeric(pf["public_float"], errors="coerce")
 if vals.isna().any():
+    hard_fail.append("%d unparseable public_float values" % vals.isna().sum())
+cover_vals = pd.to_numeric(pf["public_float_cover"], errors="coerce")
+if cover_vals.isna().any():
     hard_fail.append("%d unparseable public_float_cover values"
-                     % vals.isna().sum())
-if (vals < 0).any():
+                     % cover_vals.isna().sum())
+if (vals < 0).any() or (cover_vals < 0).any():
     hard_fail.append("negative float values")
 dated = pf[pf["public_float_date"] != ""]
 bad_date = dated[~dated["public_float_date"].str.match(
@@ -71,10 +82,47 @@ if len(bad_date):
 late = dated[(dated["public_float_date"] > dated["date_filed"])]
 if len(late):
     print("NOTE: %d rows dated after filing date (verify):" % len(late))
-    print(late[["accession", "company_name", "public_float_date",
+    print(late[["accession", "registrant", "public_float_date",
                 "date_filed"]].to_string(index=False))
 
-# 3. implied price vs shares census (soft)
+# 3. registrant identity
+if (pf["registrant"] == "").any():
+    hard_fail.append("%d rows with empty registrant"
+                     % (pf["registrant"] == "").sum())
+all_ciks = {a: set(c.split(";"))
+            for a, c in zip(pop["accession"], pop["all_ciks"])}
+bad_cik = [(r["accession"], r["cik"]) for _, r in pf.iterrows()
+           if r["cik"] not in all_ciks.get(r["accession"], set())]
+if bad_cik:
+    hard_fail.append("%d rows whose cik is not among the filing's "
+                     "header CIKs" % len(bad_cik))
+    for a, c in bad_cik[:10]:
+        print("  bad cik:", a, c)
+unmatched = pf[pf["quality_flags"].str.contains("ENTITY_LABEL_UNMATCHED")]
+if len(unmatched):
+    hard_fail.append("%d ENTITY_LABEL_UNMATCHED rows remain (alias or "
+                     "class?)" % len(unmatched))
+    print(unmatched[["accession", "registrant", "class_or_series"]]
+          .to_string(index=False))
+
+# 4. basis consistency
+BASES = {"STATED_VALUE", "STATED_ZERO", "STATED_NONE",
+         "RESOLVED_FILER_ERROR"}
+bad_basis = pf[~pf["float_basis"].isin(BASES)]
+if len(bad_basis):
+    hard_fail.append("%d rows with unknown float_basis" % len(bad_basis))
+zero_mask = vals == 0
+basis_zero = pf["float_basis"].isin({"STATED_ZERO", "STATED_NONE"})
+if (zero_mask != basis_zero).any():
+    n = (zero_mask != basis_zero).sum()
+    hard_fail.append("%d rows where public_float==0 disagrees with "
+                     "float_basis" % n)
+resolved = pf[pf["float_basis"] == "RESOLVED_FILER_ERROR"]
+if (resolved["validation"] != "OVERRIDE_VERIFIED").any():
+    hard_fail.append("RESOLVED_FILER_ERROR row without OVERRIDE_VERIFIED "
+                     "provenance")
+
+# 5. implied price vs shares census (soft)
 so_path = os.path.join(directory, "shares_outstanding_%d.csv" % year)
 if os.path.exists(so_path):
     so = pd.read_csv(so_path, dtype=str, keep_default_na=False)
@@ -90,19 +138,21 @@ if os.path.exists(so_path):
     print("\nimplied price check: %d rows joined, %d outside "
           "[0.00005, 800000] $/share" % (len(j), len(odd)))
     if len(odd):
-        print(odd[["accession", "company_name", "public_float_cover",
+        print(odd[["accession", "registrant", "public_float",
                    "shares", "implied", "validation"]]
               .sort_values("implied").to_string(index=False))
 
-# 4. scale sanity
+# 6. scale sanity
 huge = pf[vals > 5e12]
 if len(huge):
-    print("\nfloats above $5T (review each):")
-    print(huge[["accession", "company_name", "public_float_cover",
+    print("\nconsolidated floats above $5T (review each):")
+    print(huge[["accession", "registrant", "public_float",
                 "validation", "quality_flags"]].to_string(index=False))
 
 print("\nrows: %d, filings with rows: %d, coverage rows: %d"
       % (len(pf), pf["accession"].nunique(), len(cov)))
+print("float_basis:")
+print(pf.groupby("float_basis").size().to_string())
 if hard_fail:
     print("\nHARD FAILURES:")
     for h in hard_fail:

@@ -128,7 +128,9 @@ CONFIRMED = {
  "0001599916-25-000082": "READS_SONNET_CONFIRMED",
  "0001628280-25-005183": "READS_SONNET_CONFIRMED",
  "0001628280-25-006642": "READS_SONNET_CONFIRMED",
- "0001628280-25-006706": "READS_SONNET_CONFIRMED",
+ # 0001628280-25-006706 (Lamar) moved to OVERRIDES 2026-06-12: the sonnet
+ # reading confirmed Lamar Advertising's two classes but the cover's third
+ # line (Lamar Media Corp. 100 shares) was missing.
  "0001628280-25-007441": "READS_SONNET_CONFIRMED",
  "0001628280-25-008409": "READS_SONNET_CONFIRMED",
  "0001628280-25-009438": "READS_SONNET_CONFIRMED",
@@ -2039,17 +2041,9 @@ OVERRIDES = {
     "class_designator": "",
     "as_of": "2025-02-13",
     "registrant": "SL Green Realty Corp."
-   },
-   {
-    "value": "301668",
-    "label": "common units of limited partnership interest held by non-affiliates",
-    "share_type": "unit",
-    "class_designator": "",
-    "as_of": "2025-02-13",
-    "registrant": "SL Green Operating Partnership, L.P."
    }
   ],
-  "provenance": "opus panel final ruling"
+  "provenance": "opus panel final ruling; 2026-06-12 mapping-audit reversal: the panel's second row (301,668 units, SL Green Operating Partnership, L.P.) is the cover's NON-AFFILIATE holdings count, not units outstanding - the cover reads 'As of February 13, 2025, 301,668 common units of limited partnership interest of SL Green Operating Partnership, L.P. were held by non-affiliates. There is no established trading market for such units.' Under the locked rule that counts the cover itself excludes are never rows, the row is removed; the cover states no outstanding-unit total for the Operating Partnership."
  },
  "0001043337-25-000012": {
   "rows": [
@@ -9240,5 +9234,200 @@ OVERRIDES = {
    }
   ],
   "provenance": "two independent sonnet reads agree"
+ },
+ # ---- 2026-06-12 registrant-mapping audit (independent sonnet readers over
+ # every multi-registrant filing, each entry cover-verified). Root causes:
+ # the extractor deduplicates by value (two registrants' identical counts
+ # collapse into one row), rotates labels across registrant tables, and the
+ # tag-instant date adoption can displace a cover's explicit as-of date.
+ "0001104659-25-099508": {
+  "rows": [
+   {
+    "value": "4857605",
+    "label": "Class A Units",
+    "share_type": "unit",
+    "class_designator": "A",
+    "as_of": "2025-09-30",
+    "registrant": "Ferrellgas Partners, L.P."
+   },
+   {
+    "value": "1300000",
+    "label": "Class B Units",
+    "share_type": "unit",
+    "class_designator": "B",
+    "as_of": "2025-09-30",
+    "registrant": "Ferrellgas Partners, L.P."
+   },
+   {
+    "value": "1000",
+    "label": "Common Stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-09-30",
+    "registrant": "Ferrellgas Partners Finance Corp."
+   },
+   {
+    "value": "1000",
+    "label": "Common Stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-09-30",
+    "registrant": "Ferrellgas Finance Corp."
+   }
+  ],
+  "provenance": "mapping audit 2026-06-12, four independent sonnet auditors concurring, cover-verified: 'At September 30, 2025, the registrants had common units or shares of common stock outstanding as follows: Ferrellgas Partners, L.P. 4,857,605 Class A Units / 1,300,000 Class B Units / Ferrellgas, L.P. n/a / Ferrellgas Partners Finance Corp. 1,000 Common Stock / Ferrellgas Finance Corp. 1,000 Common Stock'. The extraction had rotated Class B Units onto Ferrellgas Finance Corp, garbled 'Class BCommon Units', labeled the LP's Class A Units 'shares of common stock', and omitted Ferrellgas Partners Finance Corp entirely. Ferrellgas, L.P. prints n/a - no row."
+ },
+ "0001081316-25-000004": {
+  "rows": [
+   {
+    "value": "1",
+    "label": "share of common stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-01-31",
+    "registrant": "Berkshire Hathaway Energy Company"
+   },
+   {
+    "value": "357060915",
+    "label": "shares of common stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-01-31",
+    "registrant": "PacifiCorp"
+   },
+   {
+    "value": "70980203",
+    "label": "shares of common stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-01-31",
+    "registrant": "MidAmerican Energy Company"
+   },
+   {
+    "value": "1000",
+    "label": "shares of common stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-01-31",
+    "registrant": "Nevada Power Company"
+   },
+   {
+    "value": "1000",
+    "label": "shares of common stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-01-31",
+    "registrant": "Sierra Pacific Power Company"
+   },
+   {
+    "value": "60101",
+    "label": "shares of common stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-01-31",
+    "registrant": "Eastern Gas Transmission and Storage, Inc."
+   }
+  ],
+  "provenance": "mapping audit 2026-06-12, cover-verified: the cover prints six per-registrant statements as of January 31, 2025 - BHE 1 share (all held by Berkshire Hathaway Inc.), PacifiCorp 357,060,915, MidAmerican Energy 70,980,203, Nevada Power 1,000 ($1.00 stated value), Sierra Pacific Power 1,000 ($3.75 par value), Eastern Gas Transmission and Storage 60,101. Sierra Pacific's 1,000 had collapsed into Nevada Power's identical 1,000 (value-keyed dedup) and was missing."
+ },
+ "0001130310-25-000040": {
+  "rows": [
+   {
+    "value": "651729244",
+    "label": "shares of common stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-02-10",
+    "registrant": "CenterPoint Energy, Inc."
+   },
+   {
+    "value": "1000",
+    "label": "common shares",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-02-10",
+    "registrant": "CenterPoint Energy Houston Electric, LLC"
+   },
+   {
+    "value": "1000",
+    "label": "shares of common stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-02-10",
+    "registrant": "CenterPoint Energy Resources Corp."
+   }
+  ],
+  "provenance": "mapping audit 2026-06-12, cover-verified: 'Indicate the number of shares outstanding of each of the issuers' classes of common stock as of February 10, 2025: CenterPoint Energy, Inc. 651,729,244 ... CenterPoint Energy Houston Electric, LLC 1,000 common shares outstanding, all held by Utility Holding, LLC ... CenterPoint Energy Resources Corp. 1,000 shares of common stock outstanding, all held by Utility Holding, LLC'. Houston Electric's 1,000 had collapsed into Resources Corp's identical 1,000 (value-keyed dedup) and was missing."
+ },
+ "0001193125-25-282583": {
+  "rows": [
+   {
+    "value": "59038129",
+    "label": "Common Stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-11-10",
+    "registrant": "Spire Inc."
+   },
+   {
+    "value": "26822",
+    "label": "Common Stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-11-10",
+    "registrant": "Spire Missouri Inc."
+   },
+   {
+    "value": "1972052",
+    "label": "Common Stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-11-10",
+    "registrant": "Spire Alabama Inc."
+   }
+  ],
+  "provenance": "mapping audit 2026-06-12, cover-verified: 'The number of shares outstanding of each registrant's common stock, as of November 10, 2025, was as follows: Spire Inc. ... 59,038,129 / Spire Missouri Inc. ... 26,822 / Spire Alabama Inc. ... 1,972,052'. The pipeline had adopted the tag instant (2025-11-14, the filing date) over the cover's explicit November 10 date on all three rows."
+ },
+ "0001416265-25-000006": {
+  "rows": [
+   {
+    "value": "77560839",
+    "label": "Shares of Common Stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-03-21",
+    "registrant": "Prosper Marketplace, Inc."
+   }
+  ],
+  "provenance": "mapping audit 2026-06-12, cover-verified: the cover table heading reads 'Number of Shares of Common Stock of the Registrant Outstanding at March 21, 2025' over 77,560,839 for Prosper Marketplace, Inc.; the pipeline had adopted the tag instant (2025-03-19), a date appearing nowhere on the cover. Prosper Funding LLC prints None (all common equity owned by Prosper Marketplace) - no row."
+ },
+ "0001628280-25-006706": {
+  "rows": [
+   {
+    "value": "87976923",
+    "label": "Class A common stock",
+    "share_type": "common",
+    "class_designator": "A",
+    "as_of": "2025-02-01",
+    "registrant": "Lamar Advertising Company"
+   },
+   {
+    "value": "14420085",
+    "label": "Class B common stock",
+    "share_type": "common",
+    "class_designator": "B",
+    "as_of": "2025-02-01",
+    "registrant": "Lamar Advertising Company"
+   },
+   {
+    "value": "100",
+    "label": "common stock",
+    "share_type": "common",
+    "class_designator": "",
+    "as_of": "2025-02-01",
+    "registrant": "Lamar Media Corp."
+   }
+  ],
+  "provenance": "mapping audit 2026-06-12 (second pass), cover-verified: 'Class / Outstanding at February 1, 2025: Lamar Advertising Company Class A common stock ... 87,976,923 shares / Lamar Advertising Company Class B common stock ... 14,420,085 shares / Lamar Media Corp. common stock ... 100 shares'. The two Advertising classes were sonnet-confirmed previously (entry moved from CONFIRMED); the cover's third line - the co-registrant Lamar Media Corp.'s 100 shares - was missing."
  }
 }

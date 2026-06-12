@@ -468,6 +468,154 @@ def parse_ixbrl_float_facts(content_bytes):
     return facts
 
 
+# ------------------------------------------------- registrant name matching
+
+# Company-name token canonicalization for matching cover labels / XBRL
+# legal-entity members to SGML header FILER blocks. EDGAR conformed names
+# abbreviate ("ARIZONA PUBLIC SERVICE CO"); covers spell out ("Arizona
+# Public Service Company"); both must land on the same tokens.
+_NAME_TOKEN_CANON = {
+    "COMPANY": "CO", "COMPANIES": "CO", "CORPORATION": "CORP",
+    "INCORPORATED": "INC", "LIMITED": "LTD",
+}
+# multi-token forms fused to their abbreviation AFTER per-token canon:
+# "Limited Partnership" -> LTD PARTNERSHIP -> LP, "Public Limited Company"
+# -> PUBLIC LTD CO -> PLC, "Limited Liability Company" -> LTD LIABILITY CO
+# -> LLC
+_NAME_FUSE = [
+    (("LTD", "PARTNERSHIP"), "LP"),
+    (("LTD", "LIABILITY", "CO"), "LLC"),
+    (("PUBLIC", "LTD", "CO"), "PLC"),
+]
+
+
+def _name_tokens(name):
+    """Canonical token list for company-name comparison: uppercase, '&' ->
+    AND, punctuation stripped per token, runs of single letters fused
+    ('L.P.' / 'L P' -> LP), abbreviations canonicalized, leading THE and
+    EDGAR state suffixes ('/OH/') dropped, '... and Subsidiaries' tails
+    dropped."""
+    s = name.upper().replace("&", " AND ")
+    s = re.sub(r"/[A-Z]{1,4}/?\s*$", " ", s)
+    s = re.sub(r"\b(?:AND\s+(?:ITS\s+)?)?SUBSIDIARIES\s*$", " ", s)
+    raw = [t for t in (re.sub(r"[^A-Z0-9]", "", tok) for tok in s.split())
+           if t]
+    toks, i = [], 0
+    while i < len(raw):
+        if len(raw[i]) == 1 and i + 1 < len(raw) and len(raw[i + 1]) == 1:
+            j = i
+            while j < len(raw) and len(raw[j]) == 1:
+                j += 1
+            toks.append("".join(raw[i:j]))
+            i = j
+        else:
+            toks.append(raw[i])
+            i += 1
+    toks = [_NAME_TOKEN_CANON.get(t, t) for t in toks]
+    if toks and toks[0] == "THE":
+        toks = toks[1:]
+    for pat, repl in _NAME_FUSE:
+        out, i = [], 0
+        while i < len(toks):
+            if tuple(toks[i:i + len(pat)]) == pat:
+                out.append(repl)
+                i += len(pat)
+            else:
+                out.append(toks[i])
+                i += 1
+        toks = out
+    return toks
+
+
+def _is_subsequence(short, long_):
+    it = iter(long_)
+    return all(t in it for t in short)
+
+
+def match_label_to_filer(label, filers):
+    """Match a row label (cover table line or XBRL legal-entity member) to
+    one of a filing's FILER blocks.
+
+    Returns (filer_dict, remainder) — remainder is the part of the label
+    beyond the registrant name (a security designation like "Common Stock,
+    without par value"), recovered from the ORIGINAL label text — or
+    (None, label) when no unambiguous match exists.
+
+    Tiers: exact name match; label = filer name + suffix (remainder kept);
+    label abbreviates the filer (ordered token subsequence, fewest extra
+    filer tokens wins). Ties within a tier are ambiguous -> no match."""
+    lt = _name_tokens(label)
+    if not lt:
+        return None, label
+    tiers = {0: [], 1: [], 2: []}
+    for f in filers:
+        ft = _name_tokens(f["name"])
+        if not ft:
+            continue
+        if lt == ft:
+            tiers[0].append((0, f))
+        elif len(lt) > len(ft) and lt[:len(ft)] == ft:
+            tiers[1].append((-len(ft), f))
+        elif len(lt) >= 2 and len(ft) > len(lt) and _is_subsequence(lt, ft):
+            tiers[2].append((len(ft) - len(lt), f))
+    for tier in (0, 1, 2):
+        cands = sorted(tiers[tier], key=lambda c: c[0])
+        if not cands:
+            continue
+        if len(cands) > 1 and cands[0][0] == cands[1][0]:
+            return None, label  # two filers tie — ambiguous
+        f = cands[0][1]
+        remainder = ""
+        if tier == 1:
+            ft = _name_tokens(f["name"])
+            orig = label.split()
+            for i in range(1, len(orig) + 1):
+                if _name_tokens(" ".join(orig[:i])) == ft:
+                    remainder = " ".join(orig[i:]).lstrip(" ,.-—–").strip()
+                    break
+            # a pure par-value note after the name is not a class/series
+            if re.fullmatch(r"(?i)\(?\s*(?:without|no)\s+par\s+value\.?\s*\)?",
+                            remainder):
+                remainder = ""
+            # a bare acronym of the matched name ("PSNH" after "Public
+            # Service Company of New Hampshire") restates the registrant,
+            # not a class/series
+            if re.fullmatch(r"\(?[A-Z]{2,6}\)?", remainder):
+                initials = iter(t[0] for t in ft)
+                if all(ch in initials for ch in remainder.strip("()")):
+                    remainder = ""
+        return f, remainder
+    return None, label
+
+
+def read_cached_header(cache_dir, accession):
+    """Cache-only read of a fetched SGML header — no network. Returns the
+    header text, or None when the filing isn't cached."""
+    path = os.path.join(cache_dir, accession + ".hdr.txt")
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def load_filers(directory, accession):
+    """The filing's FILER blocks (name, cik, sic) from the cached SGML
+    header, deduped — cache-only, deterministic. Empty list when the header
+    isn't cached."""
+    hdr = read_cached_header(os.path.join(directory, "cache", "headers"),
+                             accession)
+    if hdr is None:
+        return []
+    filers, seen = [], set()
+    for f in parse_sgml_header(hdr)["filers"]:
+        key = (f["name"], f["cik"])
+        if key in seen:
+            continue
+        seen.add(key)
+        filers.append(f)
+    return filers
+
+
 _SIC_RE = re.compile(
     r"STANDARD INDUSTRIAL CLASSIFICATION:\s*(.*?)\s*\[(\d{4})\]")
 

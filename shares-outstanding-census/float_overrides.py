@@ -18,6 +18,38 @@ Three tables, consumed by 12_build_final_float.py:
 Every OVERRIDES and NO_FLOAT entry was adversarially verified by an
 independent reader after generation (see progress.md). Nothing here is
 consulted at extraction time, so the extractor stays general.
+
+Override rows may carry a 'resolved' field: the verified value when BOTH
+as-filed numbers (cover print and XBRL tag) are wrong. 12_build_final_float
+publishes it as public_float with float_basis=RESOLVED_FILER_ERROR; the
+as-filed values stay in their evidence columns. Every 'resolved' entry's
+provenance must record the evidence, including the plausibility smoke test.
+
+Plausibility smoke-test record (2026-06-12, per Evan): every row whose
+as-filed value was implausible (>$5T, or implied $/share outside
+[0.00005, 800000] against the shares census) was checked against
+independent web sources before judgment:
+* Twin Vee PowerCats (0001731122-25-000412) — resolved to $5,188,400; see
+  the OVERRIDES entry below.
+* Graphjet Technology (0001213900-25-125488) — cover prints "computed by
+  reference to the closing sales price of $6.00 ... was $6.00": the filer
+  printed its share price where the aggregate belongs, and tagged 6 in
+  XBRL too. Web check: GTI was delisted from Nasdaq (Nov 2025) for low
+  market value of PUBLICLY HELD shares, so a small float is real but $6.00
+  is the price, not the float; the true value appears nowhere in the
+  filing, so the row stays as filed, flagged FLOAT_EQUALS_STATED_PRICE +
+  AS_FILED_MICRO_VALUE. Not resolvable without inventing a number.
+* Sonnet BioTherapeutics (0001493152-25-027978) — "1 share outstanding"
+  (Dec 12, 2025) looked impossible but is genuine: the merger into
+  Hyperliquid Strategies closed Dec 2, 2025 and every public Sonnet share
+  was canceled/converted; float ($4,150,174 at Mar 31, 2025) predates the
+  merger. No action.
+* The remaining micro-floats (Ultimate Holdings $140, Zentrum $193,
+  ATLANTICA $49.17, Adapti $5.60, Greater Cannabis $586.11, SinglePoint,
+  Marquie, Edgemode, Two Hands, Cosmos, World Health Energy, Green Planet)
+  are genuine as printed: par-value-based or sub-penny-price floats on
+  shells/OTC microcaps, each stated and tagged identically by the filer.
+  They keep AS_FILED_MICRO_VALUE flags.
 """
 
 CONFIRMED = {
@@ -27,7 +59,9 @@ CONFIRMED = {
     "0000042888-25-000011": "READS_2BLIND_CONFIRMED",
     "0000051434-25-000013": "READS_2BLIND_CONFIRMED",
     "0000714562-25-000010": "READS_2BLIND_CONFIRMED",
-    "0000790816-25-000009": "READS_2BLIND_CONFIRMED",
+    # 0000790816-25-000009 (Brandywine) moved to OVERRIDES 2026-06-12: the
+    # blind reads confirmed both values, but the unit float needed its
+    # registrant attribution (Brandywine Operating Partnership, L.P.).
     "0000918545-25-000002": "READS_2BLIND_CONFIRMED",
     "0000922224-25-000009": "READS_2BLIND_CONFIRMED",
     "0000927089-25-000061": "READS_2BLIND_CONFIRMED",
@@ -194,7 +228,37 @@ NO_FLOAT = {
 
 OVERRIDES = {
     "0001109357-25-000043": {'rows': [{'cover': '34615866949', 'xbrl': '34615866949', 'as_of': '2024-06-30', 'label': 'Exelon Corporation Common Stock, without par value', 'flags': ''}, {'cover': '0', 'xbrl': '', 'as_of': '2024-06-30', 'label': 'PECO Energy Company Common Stock, without par value', 'flags': 'NONE_STATED'}, {'cover': '0', 'xbrl': '', 'as_of': '2024-06-30', 'label': 'Baltimore Gas and Electric Company, without par value', 'flags': 'NONE_STATED'}, {'cover': '0', 'xbrl': '', 'as_of': '2024-06-30', 'label': 'Potomac Electric Power Company', 'flags': 'NONE_STATED'}, {'cover': '0', 'xbrl': '', 'as_of': '2024-06-30', 'label': 'Delmarva Power & Light Company', 'flags': 'NONE_STATED'}, {'cover': '0', 'xbrl': '', 'as_of': '2024-06-30', 'label': 'Atlantic City Electric Company', 'flags': 'NONE_STATED'}], 'provenance': "sonnet adjudication: the cover's per-registrant table states $34,615,866,949 for Exelon, 'None' (a stated zero) for PECO / BGE / Potomac / Delmarva / Atlantic City, 'No established market' for ComEd and 'Not applicable' for Pepco Holdings (both excluded as no-disclosure, not zeros); verified against the cover text by direct read of the table during diagnostics (adversarial check)."},
-    "0001731122-25-000412": {'rows': [{'cover': '5188400000000', 'xbrl': '5188400000', 'as_of': '2024-06-28', 'label': 'Common equity (voting and non-voting)', 'flags': 'IMPLAUSIBLE_AS_FILED'}], 'provenance': "sonnet adjudication upheld by adversarial verifier: the cover literally prints '$5,188,400 million' as of June 28, 2024, i.e. $5.1884 trillion as filed; the filer's own tag says 5,188,400,000 (the mantissa x 1000, also inconsistent). Reported as the cover prints it, flagged IMPLAUSIBLE_AS_FILED, with the tagged value in public_float_xbrl - the same as-filed-fidelity rule the shares census applied to verified filer oddities."},
+    "0001731122-25-000412": {'rows': [{'cover': '5188400000000', 'xbrl': '5188400000', 'resolved': '5188400', 'as_of': '2024-06-28', 'label': 'Common equity (voting and non-voting)', 'flags': 'IMPLAUSIBLE_AS_FILED'}], 'provenance': "Twin Vee PowerCats. The cover literally prints '$5,188,400 million' as of June 28, 2024 ($5.1884T as printed); the filer's own tag says 5,188,400,000 (same mantissa, spurious x1000 scale). Both as-filed readings fail the plausibility smoke test (2026-06-12, Evan-directed): web sources (Yahoo Finance, WallStreetZen, StockTitan) show VEEE market cap = $3.2M (Mar 2026), float = 2M shares, and a Feb 2026 offering that raised $3.0M gross - a $5.19B or $5.19T float is impossible for this issuer. The same cover states 14,874,452 shares outstanding, so the three readings imply $0.35, $349, or $348,855 per share; only the first is in VEEE's sub-dollar Nasdaq range. Judgment call, logged here: the printed digits are the disclosure and the word 'million' is the cover's error (the tag repeats the same mantissa with its own wrong scale), so public_float = 5,188,400 (scale 0). The as-filed values are preserved in public_float_cover / public_float_xbrl."},
+    # ---- registrant-attribution corrections (2026-06-12 mapping audit) ----
+    # Found by the per-registrant CIK audit (independent sonnet readers over
+    # every multi-registrant filing), each verified against the cover text.
+    # Root cause in all four: the extractor deduplicates by (value, as_of),
+    # so a second registrant's identical/unlabeled value collapsed into one
+    # row that fell to the primary filer. Values are unchanged from the
+    # validated extraction (cover = tag); these entries add the attribution.
+    "0000352541-25-000014": {'rows': [
+        {'cover': '13000000000', 'xbrl': '13000000000', 'as_of': '2024-06-30', 'label': 'Alliant Energy Corporation', 'flags': ''},
+        {'cover': '0', 'xbrl': '0', 'as_of': '2024-06-30', 'label': 'Interstate Power and Light Company', 'flags': 'ZERO_STATED'},
+        {'cover': '0', 'xbrl': '0', 'as_of': '2024-06-30', 'label': 'Wisconsin Power and Light Company', 'flags': 'ZERO_STATED'},
+    ], 'provenance': 'mapping audit 2026-06-12, cover-verified: the cover prints a three-line table as of June 30, 2024 - "Alliant Energy Corporation - $13.0 billion / Interstate Power and Light Company - $0 / Wisconsin Power and Light Company - $0". The two subsidiary zeros had collapsed into one unlabeled row attributed to the primary filer.'},
+    "0001628280-25-006389": {'rows': [
+        {'cover': '2694439281', 'xbrl': '2694439281', 'as_of': '2024-06-28', 'label': 'American States Water Company', 'flags': ''},
+        {'cover': '0', 'xbrl': '0', 'as_of': '2024-06-28', 'label': 'Golden State Water Company', 'flags': 'ZERO_STATED'},
+    ], 'provenance': 'mapping audit 2026-06-12, cover-verified: "The aggregate market value of all voting stock held by non-affiliates of Golden State Water Company was zero on June 28, 2024." The subsidiary zero had fallen unlabeled to the primary filer (American States Water, whose own float is $2,694,439,281).'},
+    "0001628280-25-006706": {'rows': [
+        {'cover': '10320640348', 'xbrl': '10320640348', 'as_of': '2024-06-28', 'label': 'Lamar Advertising Company', 'flags': ''},
+        {'cover': '0', 'xbrl': '0', 'as_of': '2024-06-28', 'label': 'Lamar Media Corp.', 'flags': 'ZERO_STATED'},
+    ], 'provenance': 'mapping audit 2026-06-12, cover-verified: "As of June 28, 2024, the aggregate market value of the voting stock held by nonaffiliates of Lamar Media Corp. was $0." The subsidiary zero had fallen unlabeled (and undated) to the primary filer; the cover dates it June 28, 2024.'},
+    "0001130310-25-000040": {'rows': [
+        {'cover': '19797614936', 'xbrl': '19797614936', 'as_of': '2024-06-30', 'label': 'CenterPoint Energy, Inc.', 'flags': ''},
+        {'cover': '0', 'xbrl': '0', 'as_of': '2024-06-30', 'label': 'CenterPoint Energy Houston Electric, LLC', 'flags': 'NONE_STATED'},
+        {'cover': '0', 'xbrl': '0', 'as_of': '2024-06-30', 'label': 'CenterPoint Energy Resources Corp.', 'flags': 'NONE_STATED'},
+    ], 'provenance': 'mapping audit 2026-06-12 (second pass), cover-verified: "The aggregate market values of the voting stock held by non-affiliates of the Registrants as of June 30, 2024 are as follows: CenterPoint Energy, Inc. ... $19,797,614,936 / CenterPoint Energy Houston Electric, LLC None / CenterPoint Energy Resources Corp. None". The two "None" rows had collapsed into one undated row (value-keyed dedup); each subsidiary carries its own tagged zero (LegalEntityAxis CercCorp / HoustonElectric members).'},
+    "0000790816-25-000009": {'rows': [
+        {'cover': '743992592', 'xbrl': '743992592', 'as_of': '2024-06-30', 'label': 'Brandywine Realty Trust', 'flags': ''},
+        {'cover': '2309866', 'xbrl': '', 'as_of': '2024-06-30', 'label': 'Brandywine Operating Partnership, L.P.', 'flags': ''},
+    ], 'provenance': 'mapping audit 2026-06-12, cover-verified: "The aggregate market value of the 515,595 common units of limited partnership (\'Units\') held by non-affiliates of Brandywine Operating Partnership, L.P. was $2,309,866 ... on June 30, 2024". The unit float belongs to the Operating Partnership (its own CIK), not the Trust; both values were previously confirmed by two blind reads (the entry replaces the READS_2BLIND_CONFIRMED line).'},
+    # ------------------------------------------------------------------------
     "0000079879-25-000034": {'rows': [{'cover': '29338000000', 'xbrl': '29338000000', 'as_of': '2024-06-30', 'label': 'Common Stock', 'flags': 'CURRENT_FLOAT_DROPPED'}], 'provenance': "manual rule-consistency entry: the cover states the required Q2 float ($29,338 million as of June 30, 2024) and a courtesy update ($26,163 million 'as of that date' = January 31, 2025, the shares-outstanding date); the disclosure of record is the Q2 value, matching the filer's own XBRL tag (29338000000 @ 2024-06-30) - the same rule the extractor applies to dated current-value pairs (e.g. Deere). Both rows were confirmed as stated by two blind reads."},
     "0000091142-25-000036": {'rows': [{'cover': '66240083', 'xbrl': '', 'as_of': '2024-06-30', 'label': 'Class A Common Stock', 'flags': ''}, {'cover': '9664355425', 'xbrl': '', 'as_of': '2024-06-30', 'label': 'Common Stock', 'flags': ''}], 'provenance': 'sonnet adjudication: The cover states two float values — $66,240,083 for Class A Common Stock and $9,664,355,425 for Common Stock as of June 30, 2024 — but the extractor captured only the Class A figure; both blind reads correctly returned both classes. [ROWS_OK_FACTS_UNMATCHED -> READS_RIGHT]'},
     "0000944130-25-000007": {'rows': [{'cover': '0', 'xbrl': '', 'as_of': '2017-05-04', 'label': 'Class A Common Units', 'flags': ''}, {'cover': '7904250', 'xbrl': '', 'as_of': '2018-06-29', 'label': 'Series A Preferred Units', 'flags': ''}], 'provenance': 'sonnet adjudication: The cover explicitly states both a $0 float for Class A Common Units (as of 2017-05-04) and a $7,904,250 float for Series A Preferred Units (as of 2018-06-29); both blind reads captured both rows, but the extractor omitted the Class A $0 row. [PROSE_ONLY -> READS_RIGHT]'},
@@ -220,9 +284,9 @@ OVERRIDES = {
     "0001641172-25-015110": {'rows': [{'cover': '1001680', 'xbrl': '', 'as_of': '2024-06-30', 'label': 'Common Stock', 'flags': ''}], 'provenance': 'sonnet adjudication: The cover explicitly states the value of common stock held by non-affiliates was $1,001,680 as of June 30, 2024; the extractor missed it and both blind reads correctly captured it. [MISSED_BY_PROSE -> READS_RIGHT]'},
     "0001683168-25-000206": {'rows': [{'cover': '140000', 'xbrl': '', 'as_of': '2024-04-30', 'label': '', 'flags': ''}], 'provenance': 'sonnet adjudication: The cover states "$140,000 on April 30, 2024"; the extractor incorrectly captured the par value "$0.0001" as the float instead. [SCALE_DISCREPANCY -> READS_RIGHT]'},
     "0001683168-25-004268": {'rows': [{'cover': '0', 'xbrl': '', 'as_of': '2024-10-31', 'label': 'Common Stock', 'flags': ''}], 'provenance': "sonnet adjudication: The cover states the float was $0 as of the last business day of the second fiscal quarter (October 31, 2024); the extractor's rows carry the wrong date (blank / April 30 shares-outstanding date) and include a spurious second row from the par value, while both blind reads correctly captured value=0 as_of=2024-10-31. [PROSE_ONLY -> READS_RIGHT]"},
-    "0001683168-25-004973": {'rows': [{'cover': '0', 'xbrl': '', 'as_of': '2024-10-31', 'label': 'common equity held by non-affiliates', 'flags': ''}], 'provenance': 'sonnet adjudication: The cover states "$0 as of October 31, 2024" for the public float; the extractor misread the $0.0001 par value and used the filing date instead of the second-fiscal-quarter end date. [PROSE_ONLY -> READS_RIGHT]'},
+    "0001683168-25-004973": {'rows': [{'cover': '0', 'xbrl': '', 'as_of': '2024-10-31', 'label': '', 'flags': 'ZERO_STATED'}], 'provenance': 'sonnet adjudication: The cover states "$0 as of October 31, 2024" for the public float; the extractor misread the $0.0001 par value and used the filing date instead of the second-fiscal-quarter end date. [PROSE_ONLY -> READS_RIGHT]; label fragment ("common equity held by non-affiliates", a clip of the disclosure sentence) cleared 2026-06-12 - not a class designation.'},
     "0001683168-25-005216": {'rows': [{'cover': '0', 'xbrl': '', 'as_of': '2024-10-31', 'label': '', 'flags': ''}], 'provenance': 'sonnet adjudication: The cover states the float was approximately $0 as of October 31, 2024 (second fiscal quarter end); the extractor wrongly assigned as_of=2025-04-30 (the fiscal year end), while both blind reads correctly captured as_of=2024-10-31. [PROSE_ONLY -> READS_RIGHT]'},
-    "0001683168-25-007116": {'rows': [{'cover': '0', 'xbrl': '', 'as_of': '2024-12-31', 'label': 'common equity held by non-affiliates', 'flags': ''}], 'provenance': 'sonnet adjudication: The cover states "$0" for the public float measured as of the last business day of the second fiscal quarter (December 31, 2024 for a June 30 FY), but the extractor incorrectly assigned the shares-outstanding date of 2025-09-18 instead. [PROSE_ONLY -> READS_RIGHT]'},
+    "0001683168-25-007116": {'rows': [{'cover': '0', 'xbrl': '', 'as_of': '2024-12-31', 'label': '', 'flags': 'ZERO_STATED'}], 'provenance': 'sonnet adjudication: The cover states "$0" for the public float measured as of the last business day of the second fiscal quarter (December 31, 2024 for a June 30 FY), but the extractor incorrectly assigned the shares-outstanding date of 2025-09-18 instead. [PROSE_ONLY -> READS_RIGHT]; label fragment ("common equity held by non-affiliates", a clip of the disclosure sentence) cleared 2026-06-12 - not a class designation.'},
     "0001713282-25-000027": {'rows': [{'cover': '0', 'xbrl': '', 'as_of': '2023-06-30', 'label': 'Common Stock', 'flags': ''}], 'provenance': 'negative-class sample (NO_FLOAT_STATED) overturned by sonnet: The cover explicitly states "N/A. 0" for the aggregate market value of common equity held by non-affiliates, and the XBRL fact confirms $0 as of the second-quarter end 2023-06-30; the first blind read had value_usd=0 correct but omitted the as_of date, while the extractor produced no rows.'},
     "0001731122-25-000267": {'rows': [{'cover': '11108160', 'xbrl': '', 'as_of': '2024-04-30', 'label': 'Common Stock', 'flags': ''}], 'provenance': "sonnet adjudication: The cover states one float of $11,108,160 as of the second fiscal quarter end (April 30, 2024); the $1,362,538 is revenue, not a float, so the extractor's second row is wrong, and neither blind read produced the correct single-row result. [PROSE_SUPERSET -> BOTH_WRONG]"},
     "0001995920-25-000021": {'rows': [{'cover': '0', 'xbrl': '', 'as_of': '2025-08-31', 'label': '', 'flags': ''}], 'provenance': "sonnet adjudication: The cover states one float disclosure ($0 as of 2025-08-31); the extractor's second row (as_of=2025-11-26, value=$0.001) is the common stock par value, not a float figure, so only the single $0 row is correct. [PROSE_ONLY -> READS_RIGHT]"},

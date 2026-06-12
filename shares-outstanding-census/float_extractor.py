@@ -370,6 +370,35 @@ def _scan_table(scope, anchor_off, require_colon=True):
     return rows if len(rows) >= 2 else []
 
 
+# ------------------------------------------------------------ label hygiene
+
+# A candidate label that is really a fragment of the disclosure sentence
+# itself (instruction-form covers put the whole sentence before the colon;
+# windowed grabs clip it mid-phrase) — never a class, series, or registrant
+# designation. Genuine labels (class names, fund series, registrant names)
+# never contain the disclosure's own machinery words.
+_LABEL_JUNK_RE = re.compile(
+    r"(?i)affiliat|\bregistrant\b|\bheld\b|market\s+value|\bas\s+of\b|"
+    r"\bsold\b|\bbid\b|\basked\b|\breported\b|\bclosing\b|\bsale\s+price\b|"
+    r"\bfiscal\b|\bquarter\b|\bwas\b|\bon\s+(?:that|such)\s+date\b|"
+    r"\bsuch\s+date\b|\bfollowing\b|\bbased\s+(?:on|upon)\b|"
+    r"\bper\s+share\b|"
+    # a label that STARTS with a function word is a clipped phrase from the
+    # disclosure sentence, never a designation
+    r"^(?:of|on|at|by|in|to|for|with|and|or|the|was|such|per)\b")
+
+
+def _clean_label(label):
+    """'' for disclosure-sentence fragments and bare dates; the label
+    otherwise."""
+    label = (label or "").strip()
+    if not label:
+        return ""
+    if _LABEL_JUNK_RE.search(label) or _DATE_RE.fullmatch(label):
+        return ""
+    return label
+
+
 # ------------------------------------------------------------- date binding
 
 # context that makes a date the price-observation date, not the as-of date
@@ -624,6 +653,17 @@ def extract_float(text, form, period_of_report="", multi_registrant=False,
                 flags.append("ANCHOR_NO_VALUE")
             continue
 
+        # the per-share prices the guards rejected in this passage: a kept
+        # "float" equal to one of them is the filer printing the share price
+        # where the aggregate belongs (a cover defect — the true float is
+        # not recoverable from the filing)
+        price_vals = set()
+        for pm in _DOLLAR_RE.finditer(scope):
+            pv, _ = _value_and_tol(pm.group(1), pm.group(2))
+            if _dollar_decoy(scope, pm.start(), pm.end(), pv) in (
+                    "PRICE_OF", "PER_SHARE", "MV_BASIS_PRICE"):
+                price_vals.add(pv)
+
         for c in picks:
             v_end_abs = scope_lo + c["end"]
             date_lo = max(0, a_start - 160)
@@ -641,6 +681,10 @@ def extract_float(text, form, period_of_report="", multi_registrant=False,
                     # the window clipped the label mid-word — drop the
                     # partial first token rather than keep a fragment
                     label = label.split(" ", 1)[1] if " " in label else ""
+            label = _clean_label(label)
+            if c["value"] in price_vals and 0 < c["value"] < 100000:
+                c["cflags"] = c.get("cflags", []) + [
+                    "FLOAT_EQUALS_STATED_PRICE"]
             r_flags = sorted(set(row_flags + c.get("cflags", []) +
                                  ([date_flag] if date_flag else [])))
             key = (c["value"], as_of)
@@ -686,6 +730,8 @@ def extract_float(text, form, period_of_report="", multi_registrant=False,
                       0.005) * len(rows)
             if abs(r["value"] - others) <= tol:
                 r["flags"] = sorted(set(r["flags"] + ["TOTAL_OF_COMPONENTS"]))
+                if r["label"].strip().lower() == "total":
+                    r["label"] = ""  # "Total" names the sum, not a class
                 for o in rows:
                     if o is not r:
                         o["flags"] = sorted(set(o["flags"] + ["COMPONENT"]))

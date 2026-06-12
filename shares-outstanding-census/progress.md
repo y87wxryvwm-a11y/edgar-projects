@@ -1,5 +1,90 @@
 # Progress log
 
+## 2026-06-12 — registrant identity, consolidated float, plausibility smoke test
+
+Evan's eye-test review of the float dataset surfaced four issues; all fixed
+in one rework, both datasets rebuilt:
+
+1. **Per-row registrant CIKs.** In combined multi-registrant filings every
+   row now carries the entity's OWN CIK + conformed name from the SGML
+   header FILER blocks (AEP's seven operating companies, Exelon's five,
+   Southern's six, Carnival plc, Rio Tinto Ltd, the seven Frontier funds —
+   each a real FILER). General name matcher in census_lib
+   (`match_label_to_filer`: canonical tokens incl. CO/CORP/INC/LP/PLC
+   fusions, exact > name+suffix > abbreviation-subsequence tiers, ties =
+   no match); 11 unmatchable abbreviations ("OG&E", "Wpl", "EIDP", "Cusa"…)
+   mapped in committed `entity_aliases.py`, each verified against its
+   header. `registrant_or_class` is gone — `registrant` (+ its `cik`) and
+   `class_or_series` are separate columns in BOTH datasets; junk
+   sentence-fragment labels (~80 distinct) killed by general label-hygiene
+   rules in the extractor; raw XBRL members now camel-split (incl. upper
+   runs: CubesmartLPAndSubsidiaries). Extractor changes verified
+   value-neutral: 0 status changes, 0 row-count changes vs snapshot.
+2. **Consolidated value.** `public_float` + `float_basis` (STATED_VALUE /
+   STATED_ZERO / STATED_NONE / RESOLVED_FILER_ERROR); as-filed evidence
+   kept in `public_float_cover` / `public_float_xbrl`. Rounded prints
+   confirmed by an exact tag adopt the tag (TAG_PRECISION_ADOPTED).
+3. **Zero semantics.** A cover printing "None" for a wholly-owned co-filer
+   is a stated zero (STATED_NONE, 10 rows) — distinct from printed $0
+   (STATED_ZERO, 91 rows) and from silence (no row; coverage carries
+   NO_FLOAT_DISCLOSED). Every zero row audited against its cover.
+4. **Plausibility smoke test** (the human "that can't be right" check, now
+   a documented tier): implausible as-filed values are checked against
+   independent web sources, judgment logged in float_overrides.py. Twin Vee
+   resolved ($5,188,400 — cover prints "$5,188,400 million", tag repeats
+   the mantissa x1000; web cap ≈$3M makes both impossible; printed digits
+   at scale 0 are the disclosure). Graphjet confirmed unresolvable (prints
+   its $6.00 share price in the float blank; flagged
+   FLOAT_EQUALS_STATED_PRICE). Sonnet Bio's "1 share outstanding" verified
+   GENUINE (merged into Hyperliquid Strategies 2025-12-02, all public
+   shares canceled). All other micro-floats verified genuine as printed.
+
+Audits this round: 9 haiku readers re-read every zero row's cover (99 at
+audit time; the attribution fixes split two more, giving 101); 16 sonnet
+auditors re-checked every multi-registrant filing's CIK attribution
+(95 filings, 292 rows); a fresh-eyes sonnet pass re-verified every fix;
+1 Opus delta audit (8th of the ≤10 budget). float_status byte-identical to
+the pre-rework snapshot (the extractor changes were value-neutral);
+coverage dispositions changed only for the corrected filings (→
+ROWS_FROM_OVERRIDE); row CSVs rebuild byte-identical across runs.
+
+The mapping audit caught 8 pre-existing defects the old mixed column had
+hidden — all cover-verified and fixed via committed overrides:
+- unlabeled second-registrant values collapsed into the primary by the
+  extractor's value-keyed dedup: Alliant (IPL/WPL $0 floats), American
+  States Water (Golden State $0), Lamar (Lamar Media $0 float AND its
+  100-share count), Brandywine (the Operating Partnership's $2.3M unit
+  float), CenterPoint (Houston Electric's 1,000 shares; CERC's "None"
+  float), Berkshire Hathaway Energy (Sierra Pacific's 1,000 shares);
+- the Ferrellgas cover table fully re-ruled (4 independent auditors
+  concurring): Class A/B Units rotated across registrants, garbled label,
+  and Ferrellgas Partners Finance Corp omitted entirely;
+- two cover-stated as-of dates displaced by tag instants (Spire, Prosper);
+- one Opus-panel override reversed: SL Green Operating Partnership's
+  301,668 was the cover's NON-AFFILIATE unit count, not units outstanding.
+Override rows whose value is the filer's own tagged number keep XBRL_MATCH
+with an OVERRIDE_ATTRIBUTION flag (both pipelines, symmetric rule).
+
+Queued for the next extractor round (general rules, not per-filing): dedup
+by (value, as_of) must key the registrant attribution too — that one
+mechanism caused 6 of the 8 findings; and a tag instant equal to the
+filing date should not displace a cover's explicit as-of date (43 rows
+currently carry DATE_FROM_XBRL_TAG with as_of == filing date; only the two
+audited ones are corrected). Also flagged by the Opus delta audit, both
+pre-existing: two covers print a class line twice and the duplicates
+publish as two identical rows (0000950170-25-043115 Class T,
+0001437749-25-006605 Class B) — decide dedup-or-keep next round.
+
+Final state: public_float_2025.csv 5,134 rows / 5,069 filings (4,922
+XBRL_MATCH 95.9%, 2 AGG, 139+9 reads, 62 override; basis: 5,032 value,
+91 zero, 10 none, 1 resolved); shares_outstanding_2025.csv 8,414 rows /
+6,771 filings (7,908 XBRL_MATCH 94.0%, 110 AGG, 218 reads, 178 override).
+All 7,650 filings accounted for in both coverage tables, 0 unresolved.
+
+ROADMAP.md added: the combined registrant-level dataset (one row per CIK
+per filing, relational master + class tables — Stata-safe, no nested
+cells) and the unthrottled-runner design for the fast machine.
+
 ## 2026-06-10 — project start
 
 Scope locked with Evan (four explicit decisions):

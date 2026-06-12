@@ -223,17 +223,23 @@ for i, row in enumerate(in_scope.itertuples(index=False), 1):
                 r["flags"] = [fl for fl in r["flags"]
                               if fl != "NO_DATE_STATED"]
                 r["flags"].append("DATE_FROM_XBRL_TAG")
+            def member_words(d):
+                # CamelCase member -> words, handling upper runs:
+                # "CubesmartLPAndSubsidiaries" -> "Cubesmart LP And
+                # Subsidiaries", "CCOHoldings" -> "CCO Holdings"
+                member = re.sub(r"Member$", "", d.split("=", 1)[1].split(":")[-1])
+                member = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", member)
+                return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", member)
+
             for d in (dims or "").split("|"):
                 if d.startswith("LegalEntityAxis=") and not r["label"]:
-                    r["label"] = d.split("=", 1)[1].split(":")[-1]
+                    r["label"] = member_words(d)
                     r["flags"].append("REGISTRANT_FROM_XBRL")
                 elif d.startswith("StatementClassOfStockAxis=") and \
                         not r["label"]:
                     # the filer's own class member names the row — the
                     # authoritative attribution for unlabeled prose
-                    member = re.sub(r"Member$", "",
-                                    d.split("=", 1)[1].split(":")[-1])
-                    r["label"] = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", member)
+                    r["label"] = member_words(d)
                     r["flags"].append("CLASS_FROM_XBRL")
         elif nonzero:
             r["xbrl"] = "XBRL_MISMATCH"
