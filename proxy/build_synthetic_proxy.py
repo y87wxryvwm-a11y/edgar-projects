@@ -1,7 +1,7 @@
 """Build a synthetic proxy-proposal dataset whose distributional summary
 reproduces every cell in proxy/dataset_shape.csv.
 
-Output: synthetic_proxy.csv in the directory below (8,461 rows x 12 columns).
+Output: synthetic_proxy.csv in the directory below (8,461 rows x 13 columns).
 """
 
 import os
@@ -182,6 +182,81 @@ def build_votes():
     return values.astype(np.int64)
 
 
+def build_market_cap():
+    """Market Cap ($ mil), pinned exactly to dataset_shape.csv:
+    n_missing=127, n_unique=4124 (non-missing), min=0, max=3_765_000,
+    mean=162_500, median=41_730. Drawn independently of every other column (zero
+    cross-variable structure), so it only smoke-tests the Line A plotting plumbing.
+
+    Construction: a deterministic multiset that pins all six moments. The two
+    central order-statistics are forced to MED (median), the extremes are LO/HI,
+    distinctness is fixed at 4124 by the chosen support, and the exact sum (= mean
+    x count) is landed with a coarse count knob on K plus a single solved-for
+    'balancer' value B. NaNs are appended last so the column is float64.
+    """
+    n_missing = 127
+    M = N - n_missing                 # 8334 non-missing (even)
+    UNIQ = 4124
+    LO, MED, HI = 0, 41_730, 3_765_000
+    target_sum = 162_500 * M          # exact integer mean -> exact sum
+
+    n_below = 1500                                   # distinct values 0..1499 (< MED)
+    below_vals = np.arange(0, n_below, dtype=np.int64)
+    K = 3_000_000                                    # coarse sum knob (distinct, < HI)
+    n_above = UNIQ - 1 - n_below                     # distinct > MED (incl HI, K, balancer B)
+    n_above_filler = n_above - 3
+    above_filler = MED + 1 + np.arange(n_above_filler, dtype=np.int64)
+    assert above_filler[-1] < K < HI
+
+    below_total = M // 2 - 1                         # 4166 -> central two are MED
+    below_counts = np.ones(n_below, dtype=np.int64)
+    below_counts[0] += below_total - n_below         # pad extra onto 0 (adds nothing to sum)
+    below_sum = int((below_vals * below_counts).sum())
+
+    med_count = 2
+    above_total = M - below_total - med_count        # 4166
+    above_extra = above_total - n_above
+    vmin = MED + 1
+    filler_sum = int(above_filler.sum())
+
+    # sum-excluding-B as a function of cK (coarse counts on K); remaining extra
+    # counts land on vmin. Then B = target_sum - sum_excl_B closes the sum exactly.
+    base_excl_B = below_sum + MED * med_count + HI + K + filler_sum
+    lo_bound, hi_bound = target_sum - HI, target_sum - MED
+    chosen = None
+    for cK in range(above_extra + 1):
+        s = base_excl_B + K * cK + (above_extra - cK) * vmin
+        B = target_sum - s
+        if lo_bound < s < hi_bound and B != K and B != HI and B > MED + n_above_filler:
+            chosen = (cK, B)
+            break
+    assert chosen is not None, "no feasible cK for Market Cap sum"
+    cK, B = chosen
+
+    above_vals = np.concatenate([above_filler, [HI, K, B]]).astype(np.int64)
+    above_counts = np.ones(n_above, dtype=np.int64)
+    above_counts[n_above_filler + 1] += cK           # K
+    above_counts[0] += (above_extra - cK)            # vmin == above_filler[0]
+    assert above_counts.sum() == above_total and (above_counts > 0).all()
+
+    vals = np.concatenate([
+        np.repeat(below_vals, below_counts),
+        np.repeat([MED], [med_count]),
+        np.repeat(above_vals, above_counts),
+    ]).astype(np.int64)
+
+    s = np.sort(vals)
+    assert vals.shape[0] == M
+    assert s[0] == LO and s[-1] == HI
+    assert (s[M // 2 - 1] + s[M // 2]) / 2 == MED
+    assert len(np.unique(vals)) == UNIQ
+    assert int(vals.sum()) == target_sum
+
+    arr = np.concatenate([vals.astype(float), np.full(n_missing, np.nan)])
+    rng.shuffle(arr)
+    return arr
+
+
 columns = {
     "Symbol": build_symbol(),
     "cik": build_cik(),
@@ -195,6 +270,7 @@ columns = {
     "myproposal_result": build_myproposal_result(),
     "Proxy Proposal Result": build_proxy_proposal_result(),
     "Votes For As % Votes Cast": build_votes(),
+    "Market Cap ($ mil)": build_market_cap(),
 }
 
 df = pd.DataFrame(columns)
