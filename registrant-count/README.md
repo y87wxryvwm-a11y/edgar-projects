@@ -1,0 +1,105 @@
+# registrant-count
+
+A flat, one-row-per-filing register of every 2025 annual filing, built to the
+same population as the [shares-outstanding census](../shares-outstanding-census/)
+and re-runnable annually. Seven columns:
+
+| Column | Source |
+|---|---|
+| CIK | SGML header, primary (first) FILER block |
+| Company Period | header CONFORMED PERIOD OF REPORT, as ISO `YYYY-MM-DD` |
+| Filing Date | EDGAR quarterly index, ISO `YYYY-MM-DD` |
+| SIC | header STANDARD INDUSTRIAL CLASSIFICATION (primary filer) |
+| State | header BUSINESS ADDRESS state (→ mail → EDGAR record); EDGAR code |
+| State Incorporated | header STATE OF INCORPORATION (→ EDGAR record); EDGAR code |
+| Accession Number | the filing's accession (`NNNNNNNNNN-NN-NNNNNN`) |
+
+Output: `registrant_count_<year>.csv` (+ a `_provenance.csv` sidecar recording,
+per row, whether State / State Incorporated came from the header, EDGAR's record,
+or neither).
+
+## Population
+
+Identical to the census: every filing whose form type is **exactly** `10-K`,
+`20-F`, or `40-F` in the year's four EDGAR quarterly indexes — filed-in-year,
+not fiscal-year — deduped by accession, no `/A` amendments. **2025: 7,650
+filings** (6,431 10-K, 1,077 20-F, 142 40-F). ABS issuers (header SIC 6189, 825
+filings) are annual filers and are **included**; filter `SIC == 6189` to drop
+them. The accession set is re-derived here independently and matches the census
+`population_2025.csv` row-for-row.
+
+## The two location fields
+
+Both are EDGAR State-or-Country codes (`CA`, `DE`, `M0`=Japan, `A6`=Ontario,
+`E9`=Cayman, `F4`=China …), upper-cased — a couple of filers key them lowercase
+(`wa`/`ct`).
+
+* **State** is the registrant's business-address state from the SGML header (the
+  primary filer), falling back to its mail-address state. As-filed.
+* **State Incorporated** is the header's STATE OF INCORPORATION. The header omits
+  that line for ~15% of filings; where it does, the value is filled from
+  **EDGAR's own authoritative company record** (the submissions API, same code
+  space) — but a fill is **kept only when the filing's own as-filed inline-XBRL
+  doesn't contradict it**. The header is trustworthy (wherever it states a value
+  it agrees with EDGAR's record 98.8% of the time), but EDGAR's record can be
+  stale or conflated where the header is silent — a reincorporation, or a foreign
+  filer whose location is mistagged as its incorporation. The filing's own XBRL
+  catches those: e.g. EDGAR says Redwood is DE-incorporated and Metalpha is in
+  Hong Kong, but each filing's cover/XBRL says Maryland and Cayman Islands — so
+  those fills are dropped rather than published wrong. Whatever neither the header
+  nor a validated record provides — mostly ABS vehicles, funds, trusts and
+  foreign issuers with no structured state of incorporation — stays blank. Set
+  `FILL_BLANKS_FROM_API = False` for a pure as-filed-header column instead.
+
+  Field provenance (2025): State — 7,536 header, 2 EDGAR-record, 112 blank;
+  State Incorporated — 6,498 header, 213 XBRL-validated EDGAR-record fills, 18
+  dropped as XBRL-contradicted, 921 blank. The `_provenance.csv` sidecar records,
+  per row, the source and the raw header / EDGAR / XBRL values behind each fill.
+
+The XBRL `dei` incorporation tag is used to **validate** fills, not as a primary
+source: read alone it is noisy (filers mix codes and names, ISO and EDGAR codes,
+country vs. province), so it is the right tool to catch a contradicted fill but
+the wrong tool to source from. The XBRL name is decoded to an EDGAR code using
+EDGAR's own code↔name pairs (US postal codes plus the foreign descriptions in
+the submissions records) — no hand-typed country table.
+
+## Setup (once per machine)
+
+Copy `config.example.py` to `config.py` and set `USER_AGENT` and `DATA_DIR`. If
+you already have the shares-outstanding-census cache, point `SEED_CACHE_DIRS` at
+its `cache/` folder and `CENSUS_POPULATION_CSV` at its `population_<year>.csv` —
+the build then runs almost entirely offline. Otherwise everything is fetched
+from EDGAR (throttled, cached) on first run. Dependencies: `requests`, `pandas`
+(plus `lxml` for the XBRL cross-check).
+
+## Scripts (run in order, in Spyder)
+
+| Script | What it does |
+|---|---|
+| `1_build_registrant_count.py` | Quarterly indexes → population; SGML header → the 7 fields; fills header-blank State / State Incorporated from EDGAR's record. Writes the CSV + provenance. |
+| `2_verify_registrant_count.py` | Deterministic suite: population completeness re-derived from the raw indexes + matched to the census; an independent second header parser reproduces every header value; API-filled values re-checked against the cached record; format. Raises if any check fails. |
+| `3_crosscheck_api.py` | Cross-checks the **header-sourced** values against EDGAR's authoritative record (independent — those rows didn't use it). |
+| `4_crosscheck_xbrl.py` | Cross-checks against the filing's **own as-filed inline-XBRL** `dei` state tags (no current-vs-filed drift). Informational — reports agreement and itemizes the XBRL's noise. |
+
+`registrant_lib.py` is the self-contained engine (index/header parsing, the two
+location fields, cached-doc XBRL extraction, submissions fetch). All fetches are
+throttled (~6 req/s) and cached, so interrupted runs resume and finished runs
+re-run offline.
+
+## How the values are trusted
+
+* **Completeness** — the accession set is re-derived straight from the four
+  cached master indexes and equals both the CSV and the census population
+  (7,650; 0 missing, 0 extra, 0 duplicates, no amendments).
+* **Shared columns** — CIK / SIC / Company Period / Filing Date / Accession match
+  the census population row-for-row.
+* **Header extraction** — a second, independently written parser (a line
+  state-machine, vs. the build's section-regex) reproduces every header value.
+* **State fields** — header-sourced values agree with EDGAR's authoritative
+  record 96.8% (State) / 98.8% (State Incorporated), the few differences being
+  as-filed-vs-current drift and redomiciliations. Every record-sourced fill is
+  validated against the filing's own as-filed XBRL (18 contradicted fills
+  dropped). Independent blind LLM reads of a stratified sample confirmed the
+  header field selection on 20/20 raw headers and the header-sourced
+  incorporations on 9/9 cover pages, and it was those cover reads that first
+  surfaced the two stale EDGAR-record fills the XBRL validation now drops.

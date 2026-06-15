@@ -17,6 +17,8 @@ __pycache__/
 # only code is committed, never fetched filings / evidence / results
 shares-outstanding/data/
 shares-outstanding-census/data/
+registrant-count/data/
+registrant-count/verify_workflow.js
 proxy/company_size_charts/
 proxy/topic_trends/
 
