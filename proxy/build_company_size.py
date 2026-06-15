@@ -12,10 +12,6 @@ cut points. Per window (2025; 2022-2025) it writes four numbered figures:
 
 Definitions (topic, proponent, voted, majority support) are copied verbatim from
 build_table1.py / build_table2.py so the cuts stay consistent with the tables.
-
-NOTE: on the synthetic data every column is drawn independently, so the bars are
-flat by construction -- this run validates the plotting plumbing; real signal
-awaits the reconciled ISS+FactSet data.
 """
 
 import os
@@ -139,8 +135,8 @@ def bin_counts(sub, nbins):
 
 
 def plot_counts(ax, c, labels, title):
-    # annotate each bar with its value so near-zero bars (e.g. "Passed" on the
-    # low-vote synthetic data) stay legible instead of looking like no data.
+    # annotate each bar with its value so near-zero bars (e.g. a "Passed" bar in a
+    # low-support bin) stay legible instead of looking like no data.
     x = np.arange(len(labels))
     w = 0.27
     fs = 6 if len(labels) <= QUARTILES else 5
@@ -242,9 +238,6 @@ Files (number = filename prefix):
 6. `6_size_all_2022_2025_deciles.png` -- all proposals, deciles, 2022-2025
 7. `7_size_gov_es_2022_2025.png` -- Governance | Environmental and Social, 2022-2025
 8. `8_size_ind_inst_2022_2025.png` -- all proposals: Individual | Institution, 2022-2025
-
-Synthetic data -> every series is flat by construction. Plumbing only; real signal
-awaits the reconciled ISS+FactSet data.
 
 ## 2. Variables and how they're used
 | Variable | Role |

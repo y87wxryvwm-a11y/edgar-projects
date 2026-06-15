@@ -3,7 +3,7 @@
 Recomputes the per-column summary (dtype, n_missing, n_unique, mean, median,
 important_values counts, and range_min/range_max where the notes column states
 a range) and prints PASS/FAIL for each aspect. If every check passes, a fresh
-shape printout of the synthetic data would match dataset_shape.csv.
+shape printout of the dataset would match dataset_shape.csv.
 """
 
 import os

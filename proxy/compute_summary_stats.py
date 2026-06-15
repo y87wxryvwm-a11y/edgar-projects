@@ -66,7 +66,7 @@ def stat_rows(sub):
     votes_median = float(votes.median())
     passed = int((sub["Proxy Proposal Result"] == "Pass").sum())
     unique_ciks = int(sub["cik"].nunique())
-    # Match industry names case-insensitively: the real data uses title case
+    # Match industry names case-insensitively: the canonical labels use title case
     # ("Investment Managers") while this list is lowercase, so normalize first.
     desc_norm = sub["Factset Industry Desc"].str.strip().str.lower()
     investment_industries = ["investment managers", "investment trusts/mutual funds"]

@@ -186,7 +186,7 @@ def build_market_cap():
     """Market Cap ($ mil), pinned exactly to dataset_shape.csv:
     n_missing=127, n_unique=4124 (non-missing), min=0, max=3_765_000,
     mean=162_500, median=41_730. Drawn independently of every other column (zero
-    cross-variable structure), so it only smoke-tests the Line A plotting plumbing.
+    cross-variable structure).
 
     Construction: a deterministic multiset that pins all six moments. The two
     central order-statistics are forced to MED (median), the extremes are LO/HI,

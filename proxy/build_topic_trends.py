@@ -18,11 +18,6 @@ often after SLB 14L, and E&S support sliding through the 2022-2024 "backlash".
 Definitions (topic, voted, omitted, withdrawn, majority support) are copied
 verbatim from build_table1.py / build_table2.py / build_company_size.py so the
 cuts stay consistent across every deliverable.
-
-NOTE: on the synthetic data every column is drawn independently of the others, so
-every series is flat and the two topics move in parallel by construction -- this
-run validates the plotting plumbing; real signal awaits the reconciled ISS+FactSet
-data.
 """
 
 import os
@@ -195,21 +190,18 @@ def finish(fig, suptitle, foot, name):
     written.append(name)
 
 
-SYN_NOTE = ("Synthetic data: columns are independent, so series are flat and the "
-            "two topics track in parallel by construction (plumbing check only).")
-
 # 1. Volume -- count, then share of all proposals
 fig, axes = plt.subplots(1, 2, figsize=(13, 5.2))
 plot_panel(axes[0], topic_count(), "Proposals per year", "Proposals")
 plot_panel(axes[1], topic_share(), "Share of all proposals", "Share of all proposals", pct=True)
-finish(fig, "Volume by topic", SYN_NOTE, "volume_by_topic.png")
+finish(fig, "Volume by topic", "", "volume_by_topic.png")
 
 # 2. Outcomes -- voted / omitted / withdrawn share (of that topic's proposals that year)
 fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.2))
 plot_panel(axes[0], topic_rate(is_voted), "Voted on", "Share of topic", pct=True)
 plot_panel(axes[1], topic_rate(is_omitted), "Omitted", "Share of topic", pct=True)
 plot_panel(axes[2], topic_rate(is_withdrawn), "Withdrawn", "Share of topic", pct=True)
-finish(fig, "Outcomes by topic", "Share = of that topic's proposals that year.\n" + SYN_NOTE,
+finish(fig, "Outcomes by topic", "Share = of that topic's proposals that year.",
        "outcomes_by_topic.png")
 
 # 3. No-action funnel -- the SLB 14L story
@@ -223,7 +215,7 @@ plot_panel(axes[1], topic_rate(granted_and_sought, sought), "Grant rate (given s
 plot_panel(axes[2], topic_rate(effective_excl), "Effective exclusion", "Share of topic", pct=True)
 finish(fig, "No-action funnel by topic",
        "Sought & effective-exclusion = share of topic; grant rate = share of sought; "
-       "effective exclusion = granted and not voted.\n" + SYN_NOTE,
+       "effective exclusion = granted and not voted.",
        "noaction_funnel.png")
 
 # 4. Support -- mean & median Votes For on voted rows, plus majority-pass rate
@@ -234,7 +226,7 @@ plot_panel(axes[2], topic_rate(is_passed, is_voted), f"Majority-pass rate (> {ma
            "Share of voted", pct=True)
 finish(fig, "Support by topic",
        f"Voted rows only; majority support = Votes For > {majority_threshold}%; diverges from "
-       f"Proxy Proposal Result=='Pass' on {divergence:.1f}% of voted rows.\n{SYN_NOTE}",
+       f"Proxy Proposal Result=='Pass' on {divergence:.1f}% of voted rows.",
        "support_by_topic.png")
 
 
@@ -254,9 +246,6 @@ Files (number = filename prefix):
 2. `2_outcomes_by_topic.png` -- share voted / omitted / withdrawn per year, by topic
 3. `3_noaction_funnel.png` -- no-action sought rate; grant rate (given sought); effective exclusion
 4. `4_support_by_topic.png` -- mean & median Votes For (voted rows); majority-pass rate
-
-Synthetic data -> every series is flat and the two topics track in parallel by
-construction. Plumbing only; real signal awaits the reconciled ISS+FactSet data.
 
 ## 2. Variables and how they're used
 | Variable | Role |
