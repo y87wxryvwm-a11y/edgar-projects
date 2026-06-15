@@ -66,7 +66,10 @@ except ImportError:
 import registrant_lib as lib
 
 COLUMNS = ["CIK", "Company Period", "Filing Date", "SIC", "State",
-           "State Incorporated", "Accession Number"]
+           "State Incorporated", "Accession Number",
+           "BDC", "ABS", "multi", "text_url", "filing_url",
+           "wksi", "shell", "afs", "src", "egc",
+           "sec_12b", "sec_12g", "sec_15d"]
 
 directory = DATA_DIR.replace("\\", "/")
 os.makedirs(directory, exist_ok=True)
@@ -104,12 +107,16 @@ for i, r in enumerate(items, 1):
         p = filers[0]
         cik = int(p["cik"])
     else:
-        p = {"sic": "", "state_of_incorp": "", "business_state": "", "mail_state": ""}
+        p = {"sic": "", "state_of_incorp": "", "business_state": "",
+             "mail_state": "", "file_number": ""}
         cik = int(r["index_cik"].lstrip("0") or 0)
     recs.append({
         "cik": cik, "period": lib.fmt_date(parsed["period_of_report"]),
         "filed": r["date_filed"], "sic": p["sic"], "acc": acc,
         "form": r["form"], "txt": txt,
+        "n_filers": len(filers),
+        "file_numbers": [f.get("file_number", "") for f in filers],
+        "all_sics": [f.get("sic", "") for f in filers],
         "h_state": p["business_state"].upper() or p["mail_state"].upper(),
         "h_soi": p["state_of_incorp"].upper(),
     })
@@ -160,7 +167,49 @@ if FILL_BLANKS_FROM_API:
         if i % 100 == 0 or i == len(fills):
             print("  [%d/%d]" % (i, len(fills)), flush=True)
 
-# --- 4. Resolve + provenance -------------------------------------------------
+# --- 3b. Cover facts: dei checkboxes (wksi/shell/afs/src/egc) and the 12(b) /
+# 12(g) registration sections. The registration sections are SCRAPED from the
+# cover text AND cross-checked against the filing's XBRL (Security12b/gTitle):
+# a security counts as registered if either source shows it. Cache-only doc
+# parse + text scrape over the in-scope cached documents; ABS docs aren't
+# cached, so ABS fall to no-checkboxes / 15(d). Cached to a CSV (re-runs fast).
+
+cover_path = os.path.join(directory, "cover_facts_%d.csv" % year)
+cover = {}
+if os.path.exists(cover_path):
+    _cf = pd.read_csv(cover_path, dtype=str, keep_default_na=False)
+    cover = {row["acc"]: dict(row) for _, row in _cf.iterrows()}
+    print("\nloaded cover-facts cache: %d filings" % len(cover))
+else:
+    print("\nparsing cover facts (one-time over the cached documents, ~20 min)...",
+          flush=True)
+    rows_cf, agree12b = [], Counter()
+    for i, rec in enumerate(recs, 1):
+        a = rec["acc"]
+        doc = lib.read_cached_doc(cache_dirs, a)
+        text = lib.read_cached_text(cache_dirs, a)
+        f = (lib.extract_cover_facts(doc) if doc else None) or {}
+        # each checkbox: the XBRL dei tag if present, else scrape the cover text
+        sc = lib.scrape_cover_checkboxes(text) if doc else {}
+        def resolve_box(k):
+            return f.get(k, "") or sc.get(k, "")
+        s12b, s12g = lib.cover_has_12b_security(text), lib.cover_has_12g_security(text)
+        x12b, x12g = bool(f.get("has_12b")), bool(f.get("has_12g"))
+        if doc is not None and text is not None:   # only where both signals exist
+            agree12b["agree" if s12b == x12b else "disagree"] += 1
+        row = {"acc": a, "wksi": resolve_box("wksi"), "shell": resolve_box("shell"),
+               "src": resolve_box("src"), "egc": resolve_box("egc"), "afs": resolve_box("afs"),
+               "x12b": "1" if x12b else "0", "x12g": "1" if x12g else "0",
+               "s12b": "1" if s12b else "0", "s12g": "1" if s12g else "0"}
+        cover[a] = row
+        rows_cf.append(row)
+        if i % 500 == 0 or i == len(recs):
+            print("  [%d/%d]" % (i, len(recs)), flush=True)
+    pd.DataFrame(rows_cf).to_csv(cover_path, index=False, encoding="utf-8",
+                                 lineterminator="\n")
+    print("12(b) scrape vs XBRL where both available:", dict(agree12b))
+
+# --- 4. Resolve + assemble + provenance --------------------------------------
 
 def resolve(header_val, api_val, xbrl_code):
     """header wins; else the API fill unless the filing's own XBRL decodes to a
@@ -175,17 +224,36 @@ def resolve(header_val, api_val, xbrl_code):
 
 
 out, prov = [], []
-state_src, soi_src = Counter(), Counter()
+state_src, soi_src, sec_src = Counter(), Counter(), Counter()
 for rec in recs:
     c, a = rec["cik"], rec["acc"]
     state, ssrc = resolve(rec["h_state"], api_state.get(c, ""), xbrl_state.get(a, ""))
     soi, isrc = resolve(rec["h_soi"], api_soi.get(c, ""), xbrl_soi.get(a, ""))
     state_src[ssrc] += 1
     soi_src[isrc] += 1
+
+    cv = cover.get(a, {})
+    has_12b = cv.get("x12b") == "1" or cv.get("s12b") == "1"
+    has_12g = cv.get("x12g") == "1" or cv.get("s12g") == "1"
+    sec_12b = "1" if has_12b else "0"
+    sec_12g = "1" if (not has_12b and has_12g) else "0"
+    sec_15d = "1" if (not has_12b and not has_12g) else "0"
+    sec_src["12b" if has_12b else "12g" if has_12g else "15d"] += 1
+
     out.append({
         "CIK": c, "Company Period": rec["period"], "Filing Date": rec["filed"],
         "SIC": rec["sic"], "State": state, "State Incorporated": soi,
         "Accession Number": a,
+        "BDC": "1" if any(fn.strip().startswith("814") for fn in rec["file_numbers"]) else "0",
+        "ABS": "1" if any(s == lib.ABS_SIC for s in rec["all_sics"]) else "0",
+        "multi": "1" if rec["n_filers"] > 1 else "0",
+        "text_url": lib.SEC_BASE + "/Archives/" + rec["txt"],
+        "filing_url": "%s/Archives/edgar/data/%d/%s/%s-index.htm"
+                      % (lib.SEC_BASE, c, a.replace("-", ""), a),
+        "wksi": cv.get("wksi", "") or "0", "shell": cv.get("shell", "") or "0",
+        "afs": cv.get("afs", ""), "src": cv.get("src", "") or "0",
+        "egc": cv.get("egc", "") or "0",
+        "sec_12b": sec_12b, "sec_12g": sec_12g, "sec_15d": sec_15d,
     })
     prov.append({
         "Accession Number": a, "CIK": c,
@@ -206,9 +274,13 @@ print("\nwrote %s (%d rows)" % (out_path, len(df)))
 print("wrote %s" % prov_path)
 print("\nState source:              ", dict(state_src))
 print("State Incorporated source: ", dict(soi_src))
-print("blank State:                %d" % (df["State"] == "").sum())
 print("blank State Incorporated:   %d" % (df["State Incorporated"] == "").sum())
 print("distinct CIKs:              %d" % df["CIK"].nunique())
-print("top States:", dict(Counter(df.loc[df['State'] != '', 'State']).most_common(8)))
-print("top States of Incorp:",
-      dict(Counter(df.loc[df['State Incorporated'] != '', 'State Incorporated']).most_common(8)))
+print("\nflag counts (=1):  BDC %d | ABS %d | multi %d | wksi %d | shell %d | src %d | egc %d"
+      % tuple((df[c] == "1").sum() for c in
+              ["BDC", "ABS", "multi", "wksi", "shell", "src", "egc"]))
+print("afs:", dict(Counter(df["afs"])))
+print("registration: 12b %d | 12g %d | 15d %d  (sum %d == %d rows)"
+      % ((df["sec_12b"] == "1").sum(), (df["sec_12g"] == "1").sum(),
+         (df["sec_15d"] == "1").sum(),
+         (df[["sec_12b", "sec_12g", "sec_15d"]] == "1").sum().sum(), len(df)))

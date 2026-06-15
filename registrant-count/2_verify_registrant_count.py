@@ -233,6 +233,47 @@ check("State Incorporated is a 2-char EDGAR code or blank", soi_ok,
       "bad=%s" % df.loc[~df["State Incorporated"].str.fullmatch(r"[A-Z0-9]{0,2}"),
                         "State Incorporated"].unique()[:10])
 
+# --- 5. NEW FLAG COLUMNS ------------------------------------------------------
+
+for col in ["BDC", "ABS", "multi", "wksi", "shell", "src", "egc",
+            "sec_12b", "sec_12g", "sec_15d"]:
+    check("%s is 0/1" % col, df[col].isin(["0", "1"]).all(),
+          "bad=%s" % df.loc[~df[col].isin(["0", "1"]), col].unique()[:5])
+check("afs is NAF/AF/LAF or blank", df["afs"].isin(["", "NAF", "AF", "LAF"]).all(),
+      "bad=%s" % df.loc[~df["afs"].isin(["", "NAF", "AF", "LAF"]), "afs"].unique()[:5])
+
+regsum = (df[["sec_12b", "sec_12g", "sec_15d"]] == "1").sum(axis=1)
+check("exactly one of sec_12b/12g/15d is 1 on every row", (regsum == 1).all(),
+      "rows not summing to 1: %d" % (regsum != 1).sum())
+
+text_bad = sum(not (u.startswith("https://www.sec.gov/Archives/edgar/data/")
+                    and u.endswith(a + ".txt"))
+               for u, a in zip(df["text_url"], df["Accession Number"]))
+idx_bad = sum(not u.endswith(a + "-index.htm")
+              for u, a in zip(df["filing_url"], df["Accession Number"]))
+check("text_url is the full-submission .txt for the accession", text_bad == 0,
+      "bad=%d" % text_bad)
+check("filing_url is the filing index page for the accession", idx_bad == 0,
+      "bad=%d" % idx_bad)
+
+# independent re-derivation of BDC / ABS / multi straight from the cached headers
+bdc_bad = abs_bad = multi_bad = 0
+for _, row in df.iterrows():
+    fl = lib.parse_header(lib.fetch_sgml_header(
+        session, cache_dirs, None, row["Accession Number"]))["filers"]
+    bdc = "1" if any((f.get("file_number", "") or "").strip().startswith("814")
+                     for f in fl) else "0"
+    abs_ = "1" if any(f.get("sic", "") == "6189" for f in fl) else "0"
+    bdc_bad += (bdc != row["BDC"])
+    abs_bad += (abs_ != row["ABS"])
+    multi_bad += (("1" if len(fl) > 1 else "0") != row["multi"])
+check("BDC reproduced from the header file numbers on every row", bdc_bad == 0,
+      "mismatches=%d" % bdc_bad)
+check("ABS reproduced from any filer's SIC=6189 on every row", abs_bad == 0,
+      "mismatches=%d" % abs_bad)
+check("multi reproduced from the header filer count on every row", multi_bad == 0,
+      "mismatches=%d" % multi_bad)
+
 # --- coverage stats (informational) ------------------------------------------
 
 print("\ncoverage:")
@@ -243,6 +284,10 @@ print("  blank State Incorporated:   %d" % (df["State Incorporated"] == "").sum(
 print("  top States:", dict(Counter(df.loc[df['State'] != '', 'State']).most_common(8)))
 print("  top States of Incorp:",
       dict(Counter(df.loc[df['State Incorporated'] != '', 'State Incorporated']).most_common(8)))
+print("  flags (=1): " + " ".join("%s=%d" % (c, (df[c] == "1").sum())
+      for c in ["BDC", "ABS", "multi", "wksi", "shell", "src", "egc",
+                "sec_12b", "sec_12g", "sec_15d"]))
+print("  afs:", dict(Counter(df["afs"])))
 
 # --- verdict ------------------------------------------------------------------
 

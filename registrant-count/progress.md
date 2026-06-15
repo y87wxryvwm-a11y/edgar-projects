@@ -1,5 +1,77 @@
 # Progress log
 
+## 2026-06-15 (later still) — 30-agent blind audit of the cover flags + fixes
+
+Evan pushed for thorough independent auditing ("you will look into individual
+rows and find the values do not match the filing unless you verify"). Ran a
+fleet of 30 blind agents reading actual cover pages (382 filings, stratified to
+rare 1-values + scrape/XBRL disagreements + each form), reconciled against every
+flag, then adversarially re-checked the residual with 2 independent skeptic
+agents quoting cover evidence. It caught real systematic bugs — exactly the
+concern. All fixed; agreement now wksi 100 / shell 99 / src 99 / egc 98 / afs 95
+/ reg 98 / bdc 99 %, and the residual is first-agent error (skeptics confirmed
+our value) or authoritative-tag-vs-literal-box, not extractor error.
+
+Bugs the audit found and fixed:
+1. **shell (the big one, 83% → 99%, shell=1 891 → 252).** `dei:EntityShellCompany`
+   is tagged with transform `ixt:booleanfalse` (value = false) but RENDERS the
+   glyph ☒ (a checked box next to "No"). The decoder trusted the glyph → ~640
+   non-shells wrongly flagged. Fix: the transform (`boolean{true,false}` /
+   `fixed-{true,false}`) is authoritative; only `boolballotbox`/text reads the
+   glyph. (A rare filer mis-tags the ☒ next to *No* under `boolballotbox` — e.g.
+   WeRide's 20-F — which no glyph rule recovers; ~1% residual.)
+2. **afs (AF vs LAF).** `EntityFilerCategory` = "Large&#160;accelerated&#160;
+   filer" — non-breaking spaces broke the substring match. Fix: normalize
+   whitespace. (The remaining afs "mismatches" are the dei tag = Non-accelerated
+   filer vs a literal cover with all three boxes empty — the tag is the filer's
+   authoritative category; we keep it.)
+3. **sec_12b over-fired.** Delisted issuers tag a `Security12bTitle` with no
+   exchange; empty/nil title & exchange tags. Fix: 12(b) requires a real
+   `SecurityExchangeName`; nil/empty/"None" ignored.
+4. **sec_12g under-fired badly (the skeptic pass caught this).** The 12(g)
+   heading varies far more than assumed: "registered **under** Section 12(g)"
+   (not only "pursuant to"), "Securities **to be** registered", "of the
+   **Exchange** Act" / no colon, "(Title of Class)" placeholders, and the §15(d)
+   "Securities for which there is a reporting obligation" boundary. Generalized
+   the scrape; 12g 714 → 853. (IBOC is a genuine filer quirk: Nasdaq stock under
+   a 12(g) heading — classified 12b on its exchange listing.)
+5. **src/egc/wksi/shell absent-XBRL** (~1–4% of 10-Ks don't tag the dei fact):
+   added a cover-checkbox scrape fallback (only when the XBRL tag is absent).
+6. **ABS** now any-filer SIC 6189 (matches the census's 825, not 824).
+
+`2_verify` extended; `data/_make_audit_sample.py` + `_reconcile_audit.py` are the
+audit harness (gitignored). `cover_facts_<year>.csv` caches the per-filing facts.
+
+## 2026-06-15 (later) — 13 added columns
+
+Evan asked for: BDC, ABS, multi, text_url, filing_url, wksi, shell, afs, src,
+egc, sec_12b, sec_12g, sec_15d. Sources, all confirmed against real filings:
+
+- **BDC** — any filer's SEC FILE NUMBER starts `814-` (from the header). **ABS**
+  — SIC 6189. **multi** — >1 FILER block. **text_url** — full-submission `.txt`.
+  **filing_url** — the filing's EDGAR index page (Evan: index page, not the
+  primary doc). All header/deterministic, no new fetches.
+- **wksi / shell / src / egc** — the inline-XBRL `dei` cover checkbox facts
+  (the tag is the printed box). Decoder handles all three encodings:
+  fixed-true/false formats, the ballot-box glyph (☒/☐), and Yes/No text.
+  **afs** — `dei:EntityFilerCategory` → `LAF`/`AF`/`NAF` (Evan: categorical, not
+  1/0). Blank where the form has no box: 40-F (MJDS) omit wksi/shell/afs; ABS
+  10-Ks omit all.
+- **sec_12b / sec_12g / sec_15d** — Evan's steer: scrape, then check with XBRL.
+  The cover's "Securities registered pursuant to §12(b)/(g)" blocks are scraped
+  AND cross-checked against `dei:Security12b/gTitle`; a security counts if
+  either shows it; hierarchy 12b > 12g > 15d, 15d the default. Build reports the
+  scrape-vs-XBRL agreement. (Evan flagged that file-number prefixes do NOT imply
+  12b/12g — correct; MUFG is `000-` but its NYSE ADSs are 12(b). File number is
+  used only for BDC.) ABS docs aren't cached → ABS default to 15(d), correct for
+  asset-backed 10-Ks.
+
+Smoke test (AMD/MUFG/Rogers-40-F/Redwood-BDC) all correct, scrape==XBRL on each.
+The cover-fact parse over the ~6,825 cached docs is one-time (~20 min), cached
+to `cover_facts_<year>.csv`; re-runs are instant. `2_verify` extended (0/1 and
+afs domains, exactly-one-registration-section, ABS==SIC6189, URL shape, BDC and
+multi re-derived independently from the headers).
+
 ## 2026-06-15 — project start, dataset complete
 
 New folder per Evan: a one-row-per-filing register of the 2025 annual-filer

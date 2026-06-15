@@ -313,6 +313,7 @@ def parse_header(header_text):
             "state_of_incorp": _field("STATE OF INCORPORATION", company or block),
             "business_state": _field("STATE", business),
             "mail_state": _field("STATE", mail),
+            "file_number": _field("SEC FILE NUMBER", block),
         })
     return out
 
@@ -439,6 +440,250 @@ def _ixbrl_root_default_contexts(content_bytes):
         if not has_dim:
             default.add(ctx.get("id", ""))
     return root, default
+
+
+def read_cached_text(cache_dirs, accession):
+    """The census's cleaned cover text for a filing (gzip), or None."""
+    for d in cache_dirs:
+        p = os.path.join(d, "text", accession + ".txt.gz")
+        if os.path.exists(p):
+            try:
+                with gzip.open(p, "rb") as f:
+                    return f.read().decode("utf-8", "replace")
+            except (OSError, EOFError):
+                continue
+    return None
+
+
+# ----------------------------------------------- cover checkbox / dei facts
+
+_COVER_BOOL = {
+    "wksi": "EntityWellKnownSeasonedIssuer",
+    "shell": "EntityShellCompany",
+    "src": "EntitySmallBusiness",
+    "egc": "EntityEmergingGrowthCompany",
+}
+# longer needles first so "Large accelerated" / "Non-accelerated" win over "Accelerated"
+_FILER_CATEGORY = [("LARGE ACCELERATED", "LAF"), ("NON-ACCELERATED", "NAF"),
+                   ("NONACCELERATED", "NAF"), ("ACCELERATED", "AF")]
+
+
+def _cover_bool(entries):
+    """A dei checkbox fact -> "1"/"0"/"" .
+
+    The TRANSFORM is authoritative, not the displayed glyph: SEC inline-XBRL
+    encodes these booleans with `ixt:booleantrue`/`booleanfalse` (or older
+    `fixed-true`/`fixed-false`) — and a `booleanfalse` fact frequently RENDERS
+    as ☒, because the filer puts a checked box next to "No". So a format ending
+    in true/false wins outright; `boolballotbox` and bare text are read from the
+    glyph (a rare filer mis-tags the ☒ next to *No* of a Yes/No question, which
+    no glyph rule can recover). Prefers a default-context fact."""
+    if not entries:
+        return ""
+    val, fmt, _ = sorted(entries, key=lambda e: 0 if e[2] else 1)[0]
+    f = fmt.rsplit(":", 1)[-1].lower()
+    if f.endswith("true"):        # fixed-true, booleantrue
+        return "1"
+    if f.endswith("false"):       # fixed-false, booleanfalse
+        return "0"
+    t = val.strip()
+    if "☒" in t or "☑" in t:
+        return "1"
+    if "☐" in t:
+        return "0"
+    tl = t.lower()
+    if tl in ("yes", "true", "x"):
+        return "1"
+    if tl in ("no", "false", ""):
+        return "0"
+    return ""
+
+
+def _filer_category(entries):
+    if not entries:
+        return ""
+    t = sorted(entries, key=lambda e: 0 if e[2] else 1)[0][0]
+    t = re.sub(r"\s+", " ", t).upper()   # NBSP/&#160; between words -> plain space
+    for needle, code in _FILER_CATEGORY:
+        if needle in t:
+            return code
+    return ""
+
+
+def extract_cover_facts(content_bytes):
+    """One inline-XBRL parse -> the cover dei facts of a filing:
+    {wksi, shell, src, egc: "1"/"0"/"" ; afs: NAF/AF/LAF/"" ; has_12b, has_12g}.
+    Returns None when the document isn't parseable inline XBRL."""
+    from lxml import etree
+
+    root, default = _ixbrl_root_default_contexts(content_bytes)
+    if root is None:
+        return None
+    collected = {}
+    has_12b = has_12g = False
+    wanted = set(_COVER_BOOL.values()) | {"EntityFilerCategory"}
+    for el in root.iter():
+        if callable(el.tag) or etree.QName(el).localname != "nonNumeric":
+            continue
+        name = el.get("name") or ""
+        if ":" not in name:
+            continue
+        prefix, local = name.split(":", 1)
+        if not el.nsmap.get(prefix, "").startswith(DEI_NS_PREFIX):
+            continue
+        if local in ("SecurityExchangeName", "Security12gTitle"):
+            v = "".join(el.itertext()).strip()
+            nil = el.get("{http://www.w3.org/2001/XMLSchema-instance}nil") == "true"
+            real = bool(v) and not nil and v.lower() not in ("none", "n/a", "not applicable")
+            if real and local == "Security12gTitle":
+                has_12g = True
+            elif real:                # a named exchange == a §12(b) registration
+                has_12b = True        # (a bare Security12bTitle with no exchange
+                                      # is a delisted issuer, not a 12(b) security)
+        elif local in wanted:
+            collected.setdefault(local, []).append(
+                ("".join(el.itertext()).strip(), el.get("format", "") or "",
+                 el.get("contextRef", "") in default))
+    out = {k: _cover_bool(collected.get(v)) for k, v in _COVER_BOOL.items()}
+    out["afs"] = _filer_category(collected.get("EntityFilerCategory"))
+    out["has_12b"] = has_12b
+    out["has_12g"] = has_12g
+    return out
+
+
+# Anchor on the full heading "Securities registered pursuant to Section 12(b/g)
+# of the Act:" — NOT a bare "Section 12(b) of the Act", which also appears in
+# the Dodd-Frank clawback sentence ("If securities are registered pursuant to
+# Section 12(b) of the Act, indicate by check mark whether the financial
+# statements ... reflect the correction of an error ...").
+# the Act suffix varies a lot: "of the Act:", "of the Exchange Act:", "of the
+# Securities Exchange Act of 1934:", sometimes with no colon before the security
+_ACT = r"of\s+the\s+(?:securities\s+)?(?:exchange\s+)?act(?:\s+of\s+1934)?\s*:?"
+# the heading varies widely: "Securities [or to be] registered pursuant to /
+# under Section 12(x)", "Securities to be registered under Section 12(x)" — but
+# never matches the clawback ("If securities ARE registered pursuant to ...").
+_REG = (r"securities\s+(?:(?:or\s+)?to\s+be\s+)?registered\s+"
+        r"(?:or\s+to\s+be\s+registered\s+)?(?:pursuant\s+to|under)\s+section\s*")
+_RE_12B_HEAD = re.compile(r"(?i)" + _REG + r"12\(b\)\s*" + _ACT)
+_RE_12G_HEAD = re.compile(r"(?i)" + _REG + r"12\(g\)\s*" + _ACT)
+# the standard 12(b) table column headers, stripped before testing for a security
+_RE_12B_HEADERS = re.compile(
+    r"(?i)title of (?:each )?class|trading symbol\(?s?\)?"
+    r"|name of each exchange on which (?:our shares are traded|registered)"
+    r"|name of each exchange")
+# a real national exchange — 12(b) IS exchange-registration, so its block names
+# one; this excludes "Common Stock ... None None" and OTC/Pink listings
+_RE_EXCHANGE = re.compile(
+    r"(?i)nasdaq|nyse|new york stock exchange|cboe|\bbzx\b|nyse american|nyse arca"
+    r"|nyse chicago|nyse texas|chicago stock exchange|\biex\b|investors exchange"
+    r"|miax|long.?term stock exchange|stock exchange|stock market")
+
+
+def cover_has_12b_security(text):
+    """True when the cover's 'Securities registered pursuant to Section 12(b)'
+    block names a security listed on a real exchange (not None / OTC)."""
+    if not text:
+        return False
+    m = _RE_12B_HEAD.search(text)
+    if not m:
+        return False
+    region = text[m.end():m.end() + 600]
+    region = re.split(r"(?i)" + _REG + r"12\(g\)|indicate by check mark", region)[0]
+    body = _RE_12B_HEADERS.sub(" ", region).strip(" :\t\r\n.—–-")
+    if not body or re.match(r"(?i)(none|not\s*applicable|n/?a)\b", body):
+        return False
+    return bool(re.search(r"[A-Za-z]", body[:160])) and bool(_RE_EXCHANGE.search(region))
+
+
+def cover_has_12g_security(text):
+    """True when the cover's 'Securities registered pursuant to Section 12(g)'
+    block names an actual security. Like the 12(b) check, the column headers
+    are STRIPPED (the security sits after 'Title of each class'); the trailing
+    'None' is the empty exchange column, not the security. A 12(g) block that
+    is itself just 'None' is False."""
+    if not text:
+        return False
+    m = _RE_12G_HEAD.search(text)
+    if not m:
+        return False
+    region = text[m.end():m.end() + 400]
+    region = re.split(r"(?i)indicate by check mark|securities\s+(?:registered|for\s+which)",
+                      region)[0]
+    body = _RE_12B_HEADERS.sub(" ", region).strip(" :\t\r\n.—–-")
+    if not body or re.match(r"(?i)(none|not\s*applicable|n/?a)\b", body):
+        return False
+    return bool(re.search(r"[A-Za-z]", body[:120]))
+
+
+# --------- cover-checkbox scrape, used only when the XBRL dei tag is ABSENT
+_CHECKED = ("☒", "☑")
+
+
+def _box_state(seg):
+    m = re.search(r"[☒☑☐]", seg)
+    return ("1" if m.group(0) in _CHECKED else "0") if m else ""
+
+
+def scrape_checkbox(text, label_re, window=14):
+    """The box TIGHTLY after a label, scanning every occurrence so the label in
+    the instructional sentence ('...a smaller reporting company, or an emerging
+    growth company. See the definitions...') — which has no adjacent box — is
+    skipped in favour of the checkbox-area occurrence."""
+    if not text:
+        return ""
+    for m in re.finditer(label_re, text, re.I):
+        s = _box_state(text[m.end():m.end() + window])
+        if s:
+            return s
+    return ""
+
+
+def scrape_yesno(text, label_re, window=220):
+    """A Yes/No check-mark question -> 1 if Yes is checked, 0 if No is checked."""
+    if not text:
+        return ""
+    m = re.search(label_re, text, re.I)
+    if not m:
+        return ""
+    seg = text[m.end():m.end() + window]
+    ym = re.search(r"yes\s*([☒☑☐])", seg, re.I)
+    nm = re.search(r"no\s*([☒☑☐])", seg, re.I)
+    if ym and ym.group(1) in _CHECKED:
+        return "1"
+    if nm and nm.group(1) in _CHECKED:
+        return "0"
+    if ym and ym.group(1) == "☐":
+        return "0"
+    return ""
+
+
+def scrape_filer_category(text):
+    """Which of the three accelerated-filer boxes is checked -> LAF/AF/NAF."""
+    if not text:
+        return ""
+    found = {}
+    for pat, code in [(r"large\s+accelerated\s+filer\s{0,3}([☒☑☐])", "LAF"),
+                      (r"non-?\s*accelerated\s+filer\s{0,3}([☒☑☐])", "NAF"),
+                      (r"(?<![a-z\-])accelerated\s+filer\s{0,3}([☒☑☐])", "AF")]:
+        for m in re.finditer(pat, text, re.I):   # skip the instructional sentence
+            found[code] = m.group(1)
+            break
+    for code in ("LAF", "AF", "NAF"):
+        if found.get(code) in _CHECKED:
+            return code
+    return ""
+
+
+def scrape_cover_checkboxes(text):
+    """Best-effort cover read of the five checkbox flags, for filings whose
+    inline XBRL omits the dei tag. Each value "1"/"0"/"" (afs: LAF/AF/NAF/"")."""
+    return {
+        "wksi": scrape_yesno(text, r"well[- ]known\s+seasoned\s+issuer"),
+        "shell": scrape_yesno(text, r"is\s+a\s+shell\s+company|registrant\s+is\s+a\s+shell"),
+        "src": scrape_checkbox(text, r"smaller\s+reporting\s+company"),
+        "egc": scrape_checkbox(text, r"emerging\s+growth\s+company"),
+        "afs": scrape_filer_category(text),
+    }
 
 
 def extract_dei_state(content_bytes, localname):

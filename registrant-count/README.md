@@ -2,7 +2,7 @@
 
 A flat, one-row-per-filing register of every 2025 annual filing, built to the
 same population as the [shares-outstanding census](../shares-outstanding-census/)
-and re-runnable annually. Seven columns:
+and re-runnable annually.
 
 | Column | Source |
 |---|---|
@@ -13,10 +13,41 @@ and re-runnable annually. Seven columns:
 | State | header BUSINESS ADDRESS state (→ mail → EDGAR record); EDGAR code |
 | State Incorporated | header STATE OF INCORPORATION (→ EDGAR record); EDGAR code |
 | Accession Number | the filing's accession (`NNNNNNNNNN-NN-NNNNNN`) |
+| BDC | `1` if any filer's SEC FILE NUMBER starts `814-` (a business development company) |
+| ABS | `1` if SIC is 6189 (asset-backed securities) |
+| multi | `1` if the filing has more than one FILER block (multiple CIKs) |
+| text_url | URL of the full-submission raw `.txt` |
+| filing_url | URL of the filing's EDGAR index page |
+| wksi | `dei:EntityWellKnownSeasonedIssuer` checkbox (`1`/`0`) |
+| shell | `dei:EntityShellCompany` checkbox (`1`/`0`) |
+| afs | accelerated-filer status from `dei:EntityFilerCategory`: `LAF` / `AF` / `NAF` (blank if the form has no such box) |
+| src | `dei:EntitySmallBusiness` (smaller reporting company) checkbox (`1`/`0`) |
+| egc | `dei:EntityEmergingGrowthCompany` checkbox (`1`/`0`) |
+| sec_12b | `1` if a security is registered under Exchange Act §12(b) (exchange-listed) |
+| sec_12g | `1` if no §12(b) but a security under §12(g) |
+| sec_15d | `1` otherwise (the §15(d) reporting default) — exactly one of the three is `1` |
 
-Output: `registrant_count_<year>.csv` (+ a `_provenance.csv` sidecar recording,
-per row, whether State / State Incorporated came from the header, EDGAR's record,
-or neither).
+Output: `registrant_count_<year>.csv` (+ a `_provenance.csv` sidecar for the
+State / State Incorporated sourcing, and a cached `cover_facts_<year>.csv`).
+
+**The cover checkboxes** (wksi, shell, afs, src, egc) are read from the filing's
+inline-XBRL `dei` cover facts — the tag IS the printed checkbox. The boolean is
+taken from the XBRL *transform* (`ixt:booleantrue`/`booleanfalse`), NOT the
+displayed glyph: a `booleanfalse` fact often renders ☒ (a checked box next to
+"No"), so trusting the glyph would (and originally did) flag thousands of
+non-shells as shells. Where the form omits a box (40-F omits wksi/shell/
+accelerated-filer; ABS Form 10-Ks omit all) the value is `0`/blank; where a
+10-K simply doesn't tag the fact (~1–4%), the cover checkbox is scraped as a
+fallback.
+
+**The registration sections** (sec_12b / sec_12g / sec_15d) follow the §12(b) >
+§12(g) > §15(d) hierarchy and are determined two ways and combined: the cover's
+"Securities registered pursuant to Section 12(b)/(g)" blocks are **scraped**, and
+**cross-checked** against the filing's XBRL (`dei:Security12bTitle` /
+`Security12gTitle`). A security counts as registered if either source shows it;
+the scrape-vs-XBRL agreement is reported by the build. A filer with no §12(b)/(g)
+security on the cover defaults to §15(d). ABS documents aren't cached, so ABS
+default to §15(d) (their asset-backed 10-Ks carry no §12 securities).
 
 ## Population
 
@@ -76,15 +107,15 @@ from EDGAR (throttled, cached) on first run. Dependencies: `requests`, `pandas`
 
 | Script | What it does |
 |---|---|
-| `1_build_registrant_count.py` | Quarterly indexes → population; SGML header → the 7 fields; fills header-blank State / State Incorporated from EDGAR's record. Writes the CSV + provenance. |
-| `2_verify_registrant_count.py` | Deterministic suite: population completeness re-derived from the raw indexes + matched to the census; an independent second header parser reproduces every header value; API-filled values re-checked against the cached record; format. Raises if any check fails. |
+| `1_build_registrant_count.py` | Quarterly indexes → population; SGML header → CIK/period/date/SIC/state/accession + BDC/ABS/multi/URLs; fills header-blank State / State Incorporated from EDGAR's record (XBRL-validated); parses each cached document's inline-XBRL `dei` cover facts + scrapes the §12(b)/(g) blocks for the cover flags. Writes the CSV + provenance + a `cover_facts_<year>.csv` cache. **First run parses ~6,825 documents (one-time, ~20 min); re-runs read the cache and finish in seconds.** |
+| `2_verify_registrant_count.py` | Deterministic suite: completeness re-derived from the raw indexes + matched to the census; an independent second header parser reproduces every header value; API-filled values re-checked against the cached record; BDC/multi re-derived from the headers; registration flags mutually exclusive; format. Raises if any check fails. |
 | `3_crosscheck_api.py` | Cross-checks the **header-sourced** values against EDGAR's authoritative record (independent — those rows didn't use it). |
 | `4_crosscheck_xbrl.py` | Cross-checks against the filing's **own as-filed inline-XBRL** `dei` state tags (no current-vs-filed drift). Informational — reports agreement and itemizes the XBRL's noise. |
 
-`registrant_lib.py` is the self-contained engine (index/header parsing, the two
-location fields, cached-doc XBRL extraction, submissions fetch). All fetches are
-throttled (~6 req/s) and cached, so interrupted runs resume and finished runs
-re-run offline.
+`registrant_lib.py` is the self-contained engine (index/header parsing, the
+location fields, cached-doc XBRL extraction, the cover-checkbox / §12 facts, and
+submissions fetch). All fetches are throttled (~6 req/s) and cached, so
+interrupted runs resume and finished runs re-run offline.
 
 ## How the values are trusted
 
@@ -99,7 +130,14 @@ re-run offline.
   record 96.8% (State) / 98.8% (State Incorporated), the few differences being
   as-filed-vs-current drift and redomiciliations. Every record-sourced fill is
   validated against the filing's own as-filed XBRL (18 contradicted fills
-  dropped). Independent blind LLM reads of a stratified sample confirmed the
-  header field selection on 20/20 raw headers and the header-sourced
-  incorporations on 9/9 cover pages, and it was those cover reads that first
-  surfaced the two stale EDGAR-record fills the XBRL validation now drops.
+  dropped). Independent blind LLM reads confirmed the header field selection on
+  20/20 raw headers and the incorporations on 9/9 cover pages.
+* **Cover flags** — a 30-agent blind audit read 382 actual cover pages
+  (stratified to rare 1-values and scrape/XBRL disagreements) and reconciled
+  against every flag; the residual was adversarially re-checked by two skeptic
+  agents quoting cover text. Agreement: wksi 100%, shell 99%, src 99%, egc 98%,
+  afs 95%, reg 98%, BDC 99%. The audit drove the fixes documented in
+  `progress.md` (the shell transform-vs-glyph bug, the 12(g) heading variants,
+  …); the remaining disagreements are first-pass-agent errors the skeptics
+  overturned, or the dei tag vs a literal blank checkbox (the tag wins), not
+  extractor errors.
