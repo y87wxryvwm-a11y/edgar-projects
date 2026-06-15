@@ -222,34 +222,55 @@ for wtag, wmask in WINDOWS:
     save(fig, f"size_ind_inst_{wtag}.png")
 
 
-README = """# Company-Size Effect
+README = """# Company-Size Effect (Line A)
 
-## 1. What these charts show
-Within the S&P 500, how shareholder-proposal **volume** and **success** scale with
-company **market cap**. Proposals are split into market-cap bins (x-axis = each
-bin's cap range in $B); every bin shows Received >= Voted >= Passed.
+How shareholder-proposal volume and success scale with company market cap. Every
+figure is a grouped bar chart: x-axis = market-cap bins, and each bin shows three
+bars -- Received >= Voted >= Passed.
 
-Files (number = filename prefix):
-1. `1_size_all_2025.png` -- all proposals, quartiles, 2025
-2. `2_size_all_2025_deciles.png` -- all proposals, deciles, 2025
-3. `3_size_gov_es_2025.png` -- Governance | Environmental and Social, 2025
-4. `4_size_ind_inst_2025.png` -- all proposals: Individual | Institution, 2025
-5. `5_size_all_2022_2025.png` -- all proposals, quartiles, 2022-2025
-6. `6_size_all_2022_2025_deciles.png` -- all proposals, deciles, 2022-2025
-7. `7_size_gov_es_2022_2025.png` -- Governance | Environmental and Social, 2022-2025
-8. `8_size_ind_inst_2022_2025.png` -- all proposals: Individual | Institution, 2022-2025
+## Conventions that apply to every figure
 
-## 2. Variables and how they're used
-| Variable | Role |
-|---|---|
-| `Market Cap ($ mil)` | **Bins (x-axis range).** One cap per company (median), full-history, equal-frequency quartiles/deciles -- mega-caps counted once so they don't skew the cut points. |
-| `Index Mtg SP50` | **Universe.** Only S&P 500 (`== 1`). |
-| `myproposal_result` | **Received** = all; **Voted** = `1voted`. |
-| `Votes For As % Votes Cast` | **Passed** = voted **and** `> 50`. |
-| `Proxy Category` | **Topic.** Governance = `Corporate Governance`; E&S = `Social/Environmental Issues`. |
-| `Proponent Type Code` | **Proponent.** Individual = `INDIVIDUAL`; Institution = other non-null. Missing -> excluded (footnoted). |
-| `year` | **Window.** `2025`, or `2022-2025`. |
-| `cik` | Company key for the per-company cap and bins. |
+- **Universe.** S&P 500 only: rows where `Index Mtg SP50 == 1`. (Set
+  `sp500_only = False` for the whole population.)
+- **Bins (x-axis).** Built from `Market Cap ($ mil)`. One cap per company: group by
+  `cik`, take the median of that company's `Market Cap ($ mil)` across all its rows
+  (full history), then cut those per-company caps into equal-frequency bins -- each
+  bin holds about the same number of companies, so prolific mega-caps don't skew the
+  edges. Each proposal is placed in its company's bin. Tick labels are the bin's cap
+  range in $B. Proposals with no market cap are excluded (footnoted). Bins are
+  computed once on the full universe, so the cap ranges are identical across all 8
+  figures.
+- **The three bars (per bin, within whatever subset the panel shows).**
+  - **Received** = count of the panel's proposals in the bin.
+  - **Voted** = of those, count where `myproposal_result == "1voted"`.
+  - **Passed** = of those, count where `myproposal_result == "1voted"` AND
+    `Votes For As % Votes Cast > 50` (the `> 50` cutoff is the `majority_threshold`
+    knob, default 50).
+- **Window** picks which proposals are counted, by `year`: `2025` = `year == 2025`;
+  `2022-2025` = `2022 <= year <= 2025`.
+
+## The 8 figures
+Each figure = one window x one cut. "Cut" = which proposals fill the bars and how the
+panels are split:
+
+| File | Window | Bins | Cut (subset shown) |
+|---|---|---|---|
+| `1_size_all_2025.png` | 2025 | quartiles (4) | all proposals, one panel |
+| `2_size_all_2025_deciles.png` | 2025 | deciles (10) | all proposals, one panel |
+| `3_size_gov_es_2025.png` | 2025 | quartiles | by topic: Governance \\| Environmental and Social |
+| `4_size_ind_inst_2025.png` | 2025 | quartiles | by proponent: Individual \\| Institution |
+| `5_size_all_2022_2025.png` | 2022-2025 | quartiles | all proposals, one panel |
+| `6_size_all_2022_2025_deciles.png` | 2022-2025 | deciles (10) | all proposals, one panel |
+| `7_size_gov_es_2022_2025.png` | 2022-2025 | quartiles | by topic: Governance \\| Environmental and Social |
+| `8_size_ind_inst_2022_2025.png` | 2022-2025 | quartiles | by proponent: Individual \\| Institution |
+
+**Cut definitions (the column each cut filters on):**
+- **Topic** (`Proxy Category`): Governance = `Corporate Governance`; Environmental and
+  Social = `Social/Environmental Issues`. The two topic panels share an identical
+  y-axis so they are directly comparable.
+- **Proponent** (`Proponent Type Code`): Individual = `INDIVIDUAL`; Institution =
+  non-null and not `INDIVIDUAL`. Rows with a missing proponent type are excluded from
+  this cut (footnoted).
 """
 
 with open(os.path.join(outdir, "README.md"), "w") as f:

@@ -6,18 +6,13 @@ plotted as two overlaid series:
 
   1_volume_by_topic.png     proposal count per year; each topic's share of all proposals
   2_outcomes_by_topic.png   share voted / omitted / withdrawn per year, by topic
-  3_noaction_funnel.png     no-action sought rate; grant rate | sought; effective exclusion
+  3_noaction_funnel.png     no-action sought rate; grant rate (given sought); effective exclusion
   4_support_by_topic.png    mean & median Votes For (voted rows); majority-pass rate
-
-Every panel marks two regime changes as vertical reference lines: SEC Staff Legal
-Bulletin 14L (Nov 2021), which narrowed companies' ability to exclude E&S
-proposals, and the 2020 Rule 14a-8 amendments (effective the 2022 season). The
-hunt is for a structural break around 2021-2022 -- E&S surviving to a vote more
-often after SLB 14L, and E&S support sliding through the 2022-2024 "backlash".
 
 Definitions (topic, voted, omitted, withdrawn, majority support) are copied
 verbatim from build_table1.py / build_table2.py / build_company_size.py so the
-cuts stay consistent across every deliverable.
+cuts stay consistent across every deliverable. See the generated README.md for the
+exact variable and formula behind every panel.
 """
 
 import os
@@ -85,11 +80,6 @@ def is_passed(s):
 
 # ---- fixed visual identities so every panel reads the same way --------------
 TOPIC_COLOR = {"Governance": "#1f77b4", "Environmental and Social": "#2ca02c"}
-# (label, x-position, color, linestyle). Two near-simultaneous 2021-2022 regime
-# changes -- kept at distinct positions AND distinct styles so they never merge
-# into one ambiguous mark, even in the narrow 3-panel figures.
-SLB_14L = ("SLB 14L (Nov 2021)", 2021.8, "#d62728", "--")             # crimson dashed
-AMEND_2020 = ("2020 14a-8 amend. (2022 season)", 2022.2, "#7f7f7f", ":")  # gray dotted
 
 # ---- universe ---------------------------------------------------------------
 universe = df[df["Index Mtg SP50"] == 1].copy() if sp500_only else df.copy()
@@ -143,17 +133,11 @@ def topic_support(stat):
 
 
 # ---- plotting ---------------------------------------------------------------
-def draw_reflines(ax):
-    for _, x, color, ls in (SLB_14L, AMEND_2020):
-        ax.axvline(x, color=color, ls=ls, lw=1.5, alpha=0.9, zorder=1)
-
-
 def plot_panel(ax, series_by_topic, title, ylabel, pct=False, pct100=False):
     for label, _ in TOPIC_PAIR:
         s = series_by_topic[label]
         ax.plot(years, s.reindex(years).values, marker="o", ms=3.5, lw=1.6,
                 color=TOPIC_COLOR[label], label=label, zorder=3)
-    draw_reflines(ax)
     ax.set_title(title, fontsize=10)
     ax.set_xlabel("Year", fontsize=8)
     ax.set_ylabel(ylabel, fontsize=8)
@@ -169,11 +153,10 @@ def plot_panel(ax, series_by_topic, title, ylabel, pct=False, pct100=False):
     ax.grid(True, axis="y", alpha=0.3)
 
 
-# one shared legend (both topics + both reference lines) for every figure
-LEGEND_HANDLES = (
-    [Line2D([0], [0], color=TOPIC_COLOR[l], marker="o", ms=4, lw=1.6, label=l) for l, _ in TOPIC_PAIR]
-    + [Line2D([0], [0], color=c, ls=ls, lw=1.5, label=name) for name, _, c, ls in (SLB_14L, AMEND_2020)]
-)
+# one shared legend (the two topic series) for every figure
+LEGEND_HANDLES = [
+    Line2D([0], [0], color=TOPIC_COLOR[l], marker="o", ms=4, lw=1.6, label=l) for l, _ in TOPIC_PAIR
+]
 
 written = []
 
@@ -181,7 +164,7 @@ written = []
 def finish(fig, suptitle, foot, name):
     name = f"{len(written) + 1}_{name}"  # number the output files 1..4
     fig.suptitle(f"{suptitle} -- {universe_label}, {years[0]}-{years[-1]}", fontsize=12)
-    fig.legend(handles=LEGEND_HANDLES, loc="lower center", ncol=4, fontsize=8,
+    fig.legend(handles=LEGEND_HANDLES, loc="lower center", ncol=2, fontsize=8,
                frameon=False, bbox_to_anchor=(0.5, 0.075))
     fig.text(0.01, 0.01, foot, fontsize=7, va="bottom")  # foot may be two lines
     fig.tight_layout(rect=[0, 0.15, 1, 0.95])
@@ -204,7 +187,7 @@ plot_panel(axes[2], topic_rate(is_withdrawn), "Withdrawn", "Share of topic", pct
 finish(fig, "Outcomes by topic", "Share = of that topic's proposals that year.",
        "outcomes_by_topic.png")
 
-# 3. No-action funnel -- the SLB 14L story
+# 3. No-action funnel
 sought = lambda s: s["mynoaction_sought"] == 1
 granted = lambda s: s["mynoaction_granted"] == 1
 granted_and_sought = lambda s: (s["mynoaction_granted"] == 1) & (s["mynoaction_sought"] == 1)
@@ -232,31 +215,56 @@ finish(fig, "Support by topic",
 
 README = """# Topic Trends Over Time (Line B)
 
-## 1. What these charts show
-Governance vs Environmental-and-Social shareholder proposals across the full year
-range, plotted as two overlaid series per metric. The question: did the two topic
-families move on different trajectories, and is there a structural break around
-2021-2022 -- when **SEC Staff Legal Bulletin 14L** (Nov 2021) narrowed companies'
-ability to exclude E&S proposals, and the **2020 Rule 14a-8 amendments** took
-effect (2022 season)? Both regime changes are marked as vertical reference lines on
-every panel.
+Governance vs Environmental-and-Social shareholder proposals over time. Each figure
+is a year-axis line chart with one line per topic; four figures, one metric family
+each.
 
-Files (number = filename prefix):
-1. `1_volume_by_topic.png` -- proposals per year; each topic's share of all proposals
-2. `2_outcomes_by_topic.png` -- share voted / omitted / withdrawn per year, by topic
-3. `3_noaction_funnel.png` -- no-action sought rate; grant rate (given sought); effective exclusion
-4. `4_support_by_topic.png` -- mean & median Votes For (voted rows); majority-pass rate
+## Conventions that apply to every figure
 
-## 2. Variables and how they're used
-| Variable | Role |
-|---|---|
-| `Proxy Category` | **Topic.** Governance = `Corporate Governance`; E&S = `Social/Environmental Issues`. Other categories count toward the "share of all proposals" denominator only. |
-| `year` | **X-axis**, full range in the data. |
-| `myproposal_result` | **Outcomes.** Voted = `1voted`; Omitted = `2omitted`; Withdrawn = `3withdrawn`. |
-| `mynoaction_sought` / `mynoaction_granted` | **No-action funnel.** Sought rate (of topic); grant rate (granted among sought); effective exclusion (granted **and** not voted, of topic). |
-| `Votes For As % Votes Cast` | **Support.** Mean & median on voted rows; majority support = `> 50`. |
-| `Proxy Proposal Result` | Divergence check vs the `> 50` pass definition (footnoted, not plotted). |
-| `Index Mtg SP50` | Universe toggle (`sp500_only`); default off -> whole population. |
+- **Topic (the two lines).** Each line is a subset of rows by `Proxy Category`:
+  - **Governance** = rows where `Proxy Category == "Corporate Governance"`
+  - **Environmental and Social** = rows where `Proxy Category == "Social/Environmental Issues"`
+  Other categories (Compensation, etc.) are dropped, EXCEPT in figure 1's right panel
+  whose denominator is "all proposals" and counts every category.
+- **X-axis.** `year` -- every year present in the data.
+- **Universe.** All rows. Set `sp500_only = True` to restrict to `Index Mtg SP50 == 1`.
+- Every y-value below is computed **per topic, per year**. Rate panels start at 0 and
+  show a gap in any topic-year whose denominator is 0.
+
+## 1. `1_volume_by_topic.png` -- Volume
+| Panel | y-value (per topic, per year) | Columns used |
+|---|---|---|
+| Proposals per year | count of the topic's rows that year | `Proxy Category`, `year` |
+| Share of all proposals | (topic rows that year) / (ALL rows that year, every category) | `Proxy Category`, `year` |
+
+## 2. `2_outcomes_by_topic.png` -- Outcomes
+Denominator of all three panels = the topic's row count that year. Numerator =
+topic rows that year where:
+| Panel | Numerator condition | Columns used |
+|---|---|---|
+| Voted on | `myproposal_result == "1voted"` | `Proxy Category`, `year`, `myproposal_result` |
+| Omitted | `myproposal_result == "2omitted"` | `Proxy Category`, `year`, `myproposal_result` |
+| Withdrawn | `myproposal_result == "3withdrawn"` | `Proxy Category`, `year`, `myproposal_result` |
+
+## 3. `3_noaction_funnel.png` -- No-action funnel
+| Panel | y-value = numerator / denominator (per topic, per year) | Columns used |
+|---|---|---|
+| No-action sought | (rows with `mynoaction_sought == 1`) / (all topic rows that year) | `Proxy Category`, `year`, `mynoaction_sought` |
+| Grant rate (given sought) | (rows with `mynoaction_granted == 1` AND `mynoaction_sought == 1`) / (rows with `mynoaction_sought == 1`) | `Proxy Category`, `year`, `mynoaction_sought`, `mynoaction_granted` |
+| Effective exclusion | (rows with `mynoaction_granted == 1` AND `myproposal_result != "1voted"`) / (all topic rows that year) | `Proxy Category`, `year`, `mynoaction_granted`, `myproposal_result` |
+
+## 4. `4_support_by_topic.png` -- Support
+Only voted rows (`myproposal_result == "1voted"`) enter this figure. The `> 50`
+majority-support cutoff is the `majority_threshold` knob (default 50).
+| Panel | y-value (per topic, per year, over voted rows) | Columns used |
+|---|---|---|
+| Mean Votes For | mean of `Votes For As % Votes Cast` | `Proxy Category`, `year`, `myproposal_result`, `Votes For As % Votes Cast` |
+| Median Votes For | median of `Votes For As % Votes Cast` | `Proxy Category`, `year`, `myproposal_result`, `Votes For As % Votes Cast` |
+| Majority-pass rate (> 50%) | (voted rows with `Votes For As % Votes Cast > 50`) / (all voted rows) | `Proxy Category`, `year`, `myproposal_result`, `Votes For As % Votes Cast` |
+
+The support figure's footnote reports how often the `> 50%` pass flag disagrees with
+`Proxy Proposal Result == "Pass"` -- a cross-check only; `Proxy Proposal Result` is
+not plotted.
 """
 
 with open(os.path.join(outdir, "README.md"), "w") as f:
