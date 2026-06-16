@@ -1,5 +1,43 @@
 # Progress log
 
+## 2026-06-16 — 100% fill of every status column (no blanks)
+
+Evan: every status column must be filled 100% — manual agent checks and logical
+heuristics allowed — defaulting to **what the filing says**; assume only when the
+filing is silent (NAF the default like 15(d); SRC by size). Findings hardcoded so
+a from-scratch rebuild reproduces exactly.
+
+Done. New `registrant_fills.py` resolves every flag in order **as-filed (XBRL) >
+agent-read > definitional > public-float size baseline > default**, with a guard
+that no heuristic/default fill may manufacture an impossible `afs=LAF` + `src=1`
+pair (as-filed pairs are kept). `registrant_overrides.py` holds the committed
+cover-read findings. `_fills.csv` records the method per cell. `2_verify` now
+asserts zero blank status cells (42/42 PASS).
+
+The only blanks were afs (982): 811 ABS, 142 40-F, ~29 non-ABS 10-K/20-F. Plan:
+- **73 blind cover reads** (workflow) over every non-ABS/non-40-F filing that was
+  blank OR whose value looked impossible (afs/src vs census float). Filled 33
+  gaps; **confirmed 39 of 40 suspicious values as genuinely as-filed** — commodity
+  trusts checking `LAF` on $1M nominal float, 2024-IPO/spinoff first filers that
+  are `NAF` at $10–47B float (Reddit, GE Vernova, Solventum, the Bitcoin ETFs…),
+  and 14 clinical biotechs that check **both** `LAF` and `SRC`. Caught one real
+  extractor error: Bitwise Bitcoin ETF afs AF→NAF. One scanned-image 10-K (HST
+  Global) read from its page JPGs (NAF/SRC/EGC, 12(g)).
+- **afs=NONE → NAF**: where the cover shows no filer-category box marked (e.g.
+  Graybar's voting-trust 10-K), NAF per the rule.
+- **40-F → NAF**: 40-F covers structurally lack the accelerated-filer box (only
+  EGC); confirmed on a spot-check; no census float for MJDS filers → NAF default.
+- **20-F src → 0**: foreign private issuers aren't smaller reporting companies.
+- **ABS → definitional NAF/0** (Evan: ABS are the least concern, skip reading
+  them). Note: a spot-check found ABS 10-Ks (utility/auto/CMBS) DO carry the
+  checkboxes — but they're not in the cover cache and read as `NAF`/not-X, the
+  default we already assign.
+
+Reg corrections from the reads (vetted individually): NAPC 12g→15d, Kyivstar
+15d→12b, HST 15d→12g; **rejected** Kioni's 15d→12g (both 12(b)/12(g) "None" =
+15(d), agent over-reasoned). Net vs prior: afs 982 blanks→0, +13 src, +9 egc,
+−7/−5 shell/wksi (20-F boolballotbox mis-reads corrected), 6 reg cells.
+
 ## 2026-06-15 (later still) — 30-agent blind audit of the cover flags + fixes
 
 Evan pushed for thorough independent auditing ("you will look into individual

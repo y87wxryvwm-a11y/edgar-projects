@@ -239,12 +239,51 @@ for col in ["BDC", "ABS", "multi", "wksi", "shell", "src", "egc",
             "sec_12b", "sec_12g", "sec_15d"]:
     check("%s is 0/1" % col, df[col].isin(["0", "1"]).all(),
           "bad=%s" % df.loc[~df[col].isin(["0", "1"]), col].unique()[:5])
-check("afs is NAF/AF/LAF or blank", df["afs"].isin(["", "NAF", "AF", "LAF"]).all(),
-      "bad=%s" % df.loc[~df["afs"].isin(["", "NAF", "AF", "LAF"]), "afs"].unique()[:5])
+check("afs is NAF/AF/LAF (never blank)", df["afs"].isin(["NAF", "AF", "LAF"]).all(),
+      "bad=%s" % df.loc[~df["afs"].isin(["NAF", "AF", "LAF"]), "afs"].unique()[:5])
+
+# every status flag must be 100% filled — no blanks anywhere
+status_cols = ["wksi", "shell", "afs", "src", "egc", "sec_12b", "sec_12g", "sec_15d"]
+blank = {c: int((df[c] == "").sum()) for c in status_cols}
+check("no blanks in any status column (100% filled)", sum(blank.values()) == 0, str(blank))
 
 regsum = (df[["sec_12b", "sec_12g", "sec_15d"]] == "1").sum(axis=1)
 check("exactly one of sec_12b/12g/15d is 1 on every row", (regsum == 1).all(),
       "rows not summing to 1: %d" % (regsum != 1).sum())
+
+# --- 5b. FILL METHODS + impossible-combo guard --------------------------------
+# Every status cell carries a recorded resolution method (as-filed, agent read,
+# definitional, size heuristic, or default). We never MANUFACTURE a logically
+# impossible status via a fill: a Large Accelerated Filer (float >= $700M) cannot
+# be a Smaller Reporting Company, so no heuristic/default fill may pair afs=LAF
+# with src=1. As-filed disclosures are reported faithfully even where unusual —
+# if a filer literally checked both boxes we keep both — so those are counted and
+# shown, not failed.
+
+fills_path = os.path.join(directory, in_filename.replace(".csv", "_fills.csv"))
+if os.path.exists(fills_path):
+    fl = pd.read_csv(fills_path, dtype=str, keep_default_na=False)
+    F = fl.set_index("Accession Number")
+    AS_FILED_METHODS = {"AS_FILED", "AGENT_READ"}
+    method_cols = ["wksi_method", "shell_method", "afs_method", "src_method",
+                   "egc_method", "reg_method"]
+    check("every row has a fill-method record", set(F.index) == csv_acc,
+          "fills=%d csv=%d" % (len(F), len(csv_acc)))
+    no_blank_method = all((fl[c] != "").all() for c in method_cols)
+    check("every status cell has a non-blank resolution method", no_blank_method)
+
+    j = df.merge(fl[["Accession Number", "src_method"]], on="Accession Number")
+    laf_src = j[(j["afs"] == "LAF") & (j["src"] == "1")]
+    manufactured = laf_src[~laf_src["src_method"].isin(AS_FILED_METHODS)]
+    check("no fill MANUFACTURED an impossible LAF+SRC pair",
+          len(manufactured) == 0,
+          "manufactured=%d (as-filed LAF+SRC, kept: %d)"
+          % (len(manufactured), len(laf_src)))
+    print("    method mix afs:", dict(Counter(fl["afs_method"])))
+    print("    method mix src:", dict(Counter(fl["src_method"])))
+    print("    as-filed LAF+SRC pairs (reported as filed):", len(laf_src))
+else:
+    print("    (fill-method checks skipped: %s not found)" % fills_path)
 
 text_bad = sum(not (u.startswith("https://www.sec.gov/Archives/edgar/data/")
                     and u.endswith(a + ".txt"))

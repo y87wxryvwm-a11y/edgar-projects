@@ -62,8 +62,14 @@ except ImportError:
         "config.py not found. Copy config.example.py to config.py and set "
         "USER_AGENT and DATA_DIR."
     )
+try:
+    from config import FLOAT_CSV
+except ImportError:
+    FLOAT_CSV = ""
 
 import registrant_lib as lib
+import registrant_fills as rfills
+from registrant_overrides import OVERRIDES
 
 COLUMNS = ["CIK", "Company Period", "Filing Date", "SIC", "State",
            "State Incorporated", "Accession Number",
@@ -209,6 +215,26 @@ else:
                                  lineterminator="\n")
     print("12(b) scrape vs XBRL where both available:", dict(agree12b))
 
+# --- 3c. Public float per filing — the size signal behind the afs / src
+# defaults where a filing leaves the box blank. Optional; absent -> no upgrade.
+
+float_by_acc = {}
+if FLOAT_CSV:
+    fp = FLOAT_CSV.replace("\\", "/")
+    if os.path.exists(fp):
+        _fl = pd.read_csv(fp, dtype=str, keep_default_na=False)
+        for _, fr in _fl.iterrows():
+            try:
+                v = float(fr.get("public_float", "") or "nan")
+            except ValueError:
+                continue
+            if v == v:   # not NaN
+                a = fr["accession"]
+                float_by_acc[a] = max(float_by_acc.get(a, v), v)   # max over classes
+        print("\nloaded public float for %d filings (afs/src size signal)" % len(float_by_acc))
+    else:
+        print("\nFLOAT_CSV set but not found (%s) — afs/src fall to NAF/not-SRC defaults" % fp)
+
 # --- 4. Resolve + assemble + provenance --------------------------------------
 
 def resolve(header_val, api_val, xbrl_code):
@@ -223,8 +249,17 @@ def resolve(header_val, api_val, xbrl_code):
     return "", "NONE"
 
 
-out, prov = [], []
+# Every status flag (wksi/shell/src/egc/afs and the 12(b)/12(g)/15(d) choice) is
+# resolved to a concrete, never-blank value via registrant_fills, in the order
+# agent-read (registrant_overrides) > as-filed (cover_facts) > ABS/FPI
+# definitional > public-float size baseline > NAF/not-SRC default. The per-cell
+# method is recorded in the *_fills.csv sidecar. As-filed disclosures are never
+# altered — a filing that reads Large Accelerated Filer stays LAF even where the
+# float makes that unusual; assumptions are made only where the filing is silent.
+
+out, prov, fillrows = [], [], []
 state_src, soi_src, sec_src = Counter(), Counter(), Counter()
+afs_method, src_method = Counter(), Counter()
 for rec in recs:
     c, a = rec["cik"], rec["acc"]
     state, ssrc = resolve(rec["h_state"], api_state.get(c, ""), xbrl_state.get(a, ""))
@@ -233,26 +268,32 @@ for rec in recs:
     soi_src[isrc] += 1
 
     cv = cover.get(a, {})
+    is_abs = any(s == lib.ABS_SIC for s in rec["all_sics"])
+    ov = OVERRIDES.get(a)
+    raw_flags = {k: cv.get(k, "") for k in ("wksi", "shell", "src", "egc", "afs")}
+    vals, meth = rfills.resolve_flags(raw_flags, rec["form"], is_abs,
+                                      float_by_acc.get(a), ov)
+
     has_12b = cv.get("x12b") == "1" or cv.get("s12b") == "1"
     has_12g = cv.get("x12g") == "1" or cv.get("s12g") == "1"
-    sec_12b = "1" if has_12b else "0"
-    sec_12g = "1" if (not has_12b and has_12g) else "0"
-    sec_15d = "1" if (not has_12b and not has_12g) else "0"
-    sec_src["12b" if has_12b else "12g" if has_12g else "15d"] += 1
+    sec_12b, sec_12g, sec_15d, sec_choice, sec_meth = \
+        rfills.resolve_registration(has_12b, has_12g, ov)
+    sec_src[sec_choice] += 1
+    afs_method[meth["afs"]] += 1
+    src_method[meth["src"]] += 1
 
     out.append({
         "CIK": c, "Company Period": rec["period"], "Filing Date": rec["filed"],
         "SIC": rec["sic"], "State": state, "State Incorporated": soi,
         "Accession Number": a,
         "BDC": "1" if any(fn.strip().startswith("814") for fn in rec["file_numbers"]) else "0",
-        "ABS": "1" if any(s == lib.ABS_SIC for s in rec["all_sics"]) else "0",
+        "ABS": "1" if is_abs else "0",
         "multi": "1" if rec["n_filers"] > 1 else "0",
         "text_url": lib.SEC_BASE + "/Archives/" + rec["txt"],
         "filing_url": "%s/Archives/edgar/data/%d/%s/%s-index.htm"
                       % (lib.SEC_BASE, c, a.replace("-", ""), a),
-        "wksi": cv.get("wksi", "") or "0", "shell": cv.get("shell", "") or "0",
-        "afs": cv.get("afs", ""), "src": cv.get("src", "") or "0",
-        "egc": cv.get("egc", "") or "0",
+        "wksi": vals["wksi"], "shell": vals["shell"],
+        "afs": vals["afs"], "src": vals["src"], "egc": vals["egc"],
         "sec_12b": sec_12b, "sec_12g": sec_12g, "sec_15d": sec_15d,
     })
     prov.append({
@@ -262,21 +303,41 @@ for rec in recs:
         "State Incorporated": soi, "soi_source": isrc, "header_soi": rec["h_soi"],
         "api_soi": api_soi.get(c, ""), "xbrl_soi": xbrl_soi_raw.get(a, ""),
     })
+    fillrows.append({
+        "Accession Number": a,
+        "wksi": vals["wksi"], "wksi_method": meth["wksi"],
+        "shell": vals["shell"], "shell_method": meth["shell"],
+        "afs": vals["afs"], "afs_method": meth["afs"],
+        "src": vals["src"], "src_method": meth["src"],
+        "egc": vals["egc"], "egc_method": meth["egc"],
+        "reg": sec_choice, "reg_method": sec_meth,
+        "is_abs": "1" if is_abs else "0", "form": rec["form"],
+        "public_float": ("%.0f" % float_by_acc[a]) if a in float_by_acc else "",
+    })
 
 # --- 5. Write + summary ------------------------------------------------------
 
+fills_path = os.path.join(directory, out_filename.replace(".csv", "_fills.csv"))
 df = pd.DataFrame(out, columns=COLUMNS) \
     .sort_values("Accession Number").reset_index(drop=True)
 df.to_csv(out_path, index=False, encoding="utf-8", lineterminator="\n")
 pd.DataFrame(prov).sort_values("Accession Number").to_csv(
     prov_path, index=False, encoding="utf-8", lineterminator="\n")
+pd.DataFrame(fillrows).sort_values("Accession Number").to_csv(
+    fills_path, index=False, encoding="utf-8", lineterminator="\n")
 print("\nwrote %s (%d rows)" % (out_path, len(df)))
 print("wrote %s" % prov_path)
+print("wrote %s" % fills_path)
 print("\nState source:              ", dict(state_src))
 print("State Incorporated source: ", dict(soi_src))
 print("blank State Incorporated:   %d" % (df["State Incorporated"] == "").sum())
 print("distinct CIKs:              %d" % df["CIK"].nunique())
-print("\nflag counts (=1):  BDC %d | ABS %d | multi %d | wksi %d | shell %d | src %d | egc %d"
+
+# every status flag must now be 100% filled (no blanks)
+status_cols = ["wksi", "shell", "afs", "src", "egc", "sec_12b", "sec_12g", "sec_15d"]
+blanks = {c: int((df[c] == "").sum()) for c in status_cols}
+print("\nblank status cells (must all be 0):", blanks)
+print("flag counts (=1):  BDC %d | ABS %d | multi %d | wksi %d | shell %d | src %d | egc %d"
       % tuple((df[c] == "1").sum() for c in
               ["BDC", "ABS", "multi", "wksi", "shell", "src", "egc"]))
 print("afs:", dict(Counter(df["afs"])))
@@ -284,3 +345,14 @@ print("registration: 12b %d | 12g %d | 15d %d  (sum %d == %d rows)"
       % ((df["sec_12b"] == "1").sum(), (df["sec_12g"] == "1").sum(),
          (df["sec_15d"] == "1").sum(),
          (df[["sec_12b", "sec_12g", "sec_15d"]] == "1").sum().sum(), len(df)))
+print("\nafs method:", dict(afs_method))
+print("src method:", dict(src_method))
+
+# As-filed LAF + SRC is logically impossible on the float thresholds but is a
+# real (if unusual) filer disclosure — we report it as filed. Show how many and
+# confirm none were MANUFACTURED by a heuristic/default fill.
+fdf = pd.DataFrame(fillrows)
+laf_src = fdf[(fdf["afs"] == "LAF") & (fdf["src"] == "1")]
+manufactured = laf_src[~laf_src["src_method"].isin(["AS_FILED", "AGENT_READ"])]
+print("\nas-filed LAF+SRC pairs (kept as filed): %d | manufactured by a fill: %d"
+      % (len(laf_src), len(manufactured)))

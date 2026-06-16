@@ -18,3 +18,9 @@ SEED_CACHE_DIRS = [
 # OPTIONAL — the census population_<year>.csv, used by the verify script for an
 # independent completeness + shared-column cross-check. Leave "" to skip it.
 CENSUS_POPULATION_CSV = ""
+
+# OPTIONAL — the census public_float_<year>.csv. Public float is the size signal
+# behind the rules-defined defaults for the accelerated-filer (afs) and smaller-
+# reporting-company (src) columns where a filing leaves the box blank. Leave ""
+# to fall back to NAF / not-SRC defaults with no size upgrade.
+FLOAT_CSV = ""

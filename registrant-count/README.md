@@ -20,7 +20,7 @@ and re-runnable annually.
 | filing_url | URL of the filing's EDGAR index page |
 | wksi | `dei:EntityWellKnownSeasonedIssuer` checkbox (`1`/`0`) |
 | shell | `dei:EntityShellCompany` checkbox (`1`/`0`) |
-| afs | accelerated-filer status from `dei:EntityFilerCategory`: `LAF` / `AF` / `NAF` (blank if the form has no such box) |
+| afs | accelerated-filer status: `LAF` / `AF` / `NAF` — never blank (`NAF` is the default unless the filing marks Accelerated or Large Accelerated) |
 | src | `dei:EntitySmallBusiness` (smaller reporting company) checkbox (`1`/`0`) |
 | egc | `dei:EntityEmergingGrowthCompany` checkbox (`1`/`0`) |
 | sec_12b | `1` if a security is registered under Exchange Act §12(b) (exchange-listed) |
@@ -28,17 +28,39 @@ and re-runnable annually.
 | sec_15d | `1` otherwise (the §15(d) reporting default) — exactly one of the three is `1` |
 
 Output: `registrant_count_<year>.csv` (+ a `_provenance.csv` sidecar for the
-State / State Incorporated sourcing, and a cached `cover_facts_<year>.csv`).
+State / State Incorporated sourcing, a `_fills.csv` sidecar recording how each
+status cell was resolved, and a cached `cover_facts_<year>.csv`).
+
+**Every status flag is filled 100% — no blanks.** Each cell is resolved in this
+order (recorded per cell in `_fills.csv`): the **filing's own value** wins first
+— its dei XBRL tag (`AS_FILED`), or a blind cover-page read where the tag was
+absent or wrong (`AGENT_READ`, hardcoded in `registrant_overrides.py`). Only
+where the filing is silent do we assume: a status the form structurally can't
+carry is `DEFINITIONAL` (ABS issuers have no common equity → `NAF` / not-SRC;
+foreign private issuers on 20-F/40-F aren't smaller reporting companies → src 0;
+40-F covers have no accelerated-filer box → `NAF`); otherwise the rules-defined
+size baseline from the public-float census (`SIZE_HEURISTIC`: afs ≥ $700M `LAF`,
+≥ $75M `AF`, else `NAF`; src < $250M float → 1); else the residual `DEFAULT`
+(`NAF`, not-SRC). **We default to what the filing says** — a cover that reads
+Large Accelerated Filer stays `LAF` even where its float makes that unusual; the
+14 filings that disclose both `afs=LAF` and `src=1` (clinical-stage biotechs,
+mostly) are reported exactly as filed. We never *manufacture* an impossible
+status: a heuristic/default fill is barred from pairing `afs=LAF` with `src=1`
+(verified). Findings from the manual cover reads are committed as code
+(`registrant_overrides.py`), so a from-scratch rebuild reproduces them exactly.
 
 **The cover checkboxes** (wksi, shell, afs, src, egc) are read from the filing's
 inline-XBRL `dei` cover facts — the tag IS the printed checkbox. The boolean is
 taken from the XBRL *transform* (`ixt:booleantrue`/`booleanfalse`), NOT the
 displayed glyph: a `booleanfalse` fact often renders ☒ (a checked box next to
 "No"), so trusting the glyph would (and originally did) flag thousands of
-non-shells as shells. Where the form omits a box (40-F omits wksi/shell/
-accelerated-filer; ABS Form 10-Ks omit all) the value is `0`/blank; where a
-10-K simply doesn't tag the fact (~1–4%), the cover checkbox is scraped as a
-fallback.
+non-shells as shells. Where a 10-K doesn't tag a fact (~1–4%) the printed
+checkbox is scraped, and where neither the tag nor the scrape resolves it, the
+cover was read directly (`registrant_overrides.py`) — including one scanned-image
+10-K read from the page images. 40-F covers structurally omit the wksi / shell /
+accelerated-filer boxes (they carry only EGC); those fall to the documented
+defaults. ABS 10-Ks aren't in the cover cache, so ABS take the definitional
+default (`NAF` / not-WKSI / not-shell / not-SRC / not-EGC) rather than a read.
 
 **The registration sections** (sec_12b / sec_12g / sec_15d) follow the §12(b) >
 §12(g) > §15(d) hierarchy and are determined two ways and combined: the cover's
@@ -114,8 +136,11 @@ from EDGAR (throttled, cached) on first run. Dependencies: `requests`, `pandas`
 
 `registrant_lib.py` is the self-contained engine (index/header parsing, the
 location fields, cached-doc XBRL extraction, the cover-checkbox / §12 facts, and
-submissions fetch). All fetches are throttled (~6 req/s) and cached, so
-interrupted runs resume and finished runs re-run offline.
+submissions fetch). `registrant_fills.py` is the deterministic 100%-fill resolver
+(as-filed > agent-read > definitional > size-heuristic > default, with the
+impossible-combo guard); `registrant_overrides.py` holds the committed cover-read
+findings. All fetches are throttled (~6 req/s) and cached, so interrupted runs
+resume and finished runs re-run offline.
 
 ## How the values are trusted
 
@@ -141,3 +166,13 @@ interrupted runs resume and finished runs re-run offline.
   …); the remaining disagreements are first-pass-agent errors the skeptics
   overturned, or the dei tag vs a literal blank checkbox (the tag wins), not
   extractor errors.
+* **100% fill + blind reads** — to leave no blank, the 73 filings whose flags the
+  extractor couldn't resolve (tag absent + scrape missed) or whose value looked
+  impossible (afs/src vs float) were blind-read by independent agents over the
+  actual cover; that filled 33 gaps and confirmed 39 of 40 suspicious values as
+  genuinely as-filed (commodity trusts that check `LAF` on nominal float;
+  recently-IPO'd `NAF` first filers; biotechs that check both `LAF` and `SRC`),
+  catching one real extractor error (a Bitcoin ETF's afs). One scanned-image 10-K
+  was read from its page images. All reads are committed in
+  `registrant_overrides.py`. `2_verify` then asserts zero blank status cells and
+  that no fill manufactured an impossible `LAF`+`SRC` pair.
