@@ -31,24 +31,21 @@ this computer.
 - **New year:** drop the new `*.csv` in `data/` and relaunch. It appears
   automatically and is available in Compare.
 - **New columns:** they show up automatically, auto-classified (category / number
-  / date / id / url). To give a column a nicer label, a fixed value order, a
-  definition, or to force how it's treated, add an entry in **`column_config.py`**
-  and relaunch. That file is the only place to edit; everything not listed there
-  is inferred.
+  / date / id / url). The dashboard always shows the **original column name and
+  the original values** — it never renames a variable or relabels a value. To
+  force how a column is treated, or set a fixed value order, add an entry in
+  **`column_config.py`** and relaunch. That file is the only place to edit;
+  everything not listed there is inferred.
 
 ## What's in it
 
 - **Overview** — live count + percent for every category, and the standard
-  breakdown charts. Reacts to the filters instantly.
-- **Explore** — the full table: sort, filter, show/hide columns, with a running
-  count of the current selection. **Download filtered CSV** writes exactly the
-  rows and columns in view.
-- **Build** — pick a row (and optional column) dimension to get a cross-tab and a
-  chart; for numeric columns choose sum / average / min / max / median. **Copy**
-  puts the table on the clipboard so it pastes cleanly into both Word and Excel.
-- **Compare** — one breakdown across every loaded year, with the change.
-- **Reference** — what each column means and how it's computed, plus a live
-  profile (distinct values, blanks, top values).
+  breakdown charts. Reacts to the filters instantly. High-cardinality breakdowns
+  (e.g. State) show their top 10 with a "show all" control.
+- **Explore** — the full table: sort, show/hide columns, and search within a
+  chosen column, with a running count of the current selection. **Download
+  filtered CSV** writes exactly the rows and columns in view.
+- **Compare** — one breakdown across every loaded year, side by side.
 
 The **filter bar** is global: turning off a value (e.g. ABS) removes those rows
 from the table, every chart, and every count at once.

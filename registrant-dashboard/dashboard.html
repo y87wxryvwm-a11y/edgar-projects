@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Registrant dashboard</title>
+<title>Registrant Count Dashboard</title>
 <style>
   :root{
     --bg:#f4f5f7; --panel:#ffffff; --ink:#1b1f24; --muted:#5b6470; --line:#dfe3e8;
@@ -137,7 +137,7 @@
 <body>
 <div id="app">
   <header class="top">
-    <h1>Registrant dashboard</h1>
+    <h1>Registrant Count Dashboard</h1>
     <div class="vintage-wrap">
       <span>Year</span>
       <select id="vintageSel" title="Dataset shown in Overview, Explore and Build"></select>
@@ -160,9 +160,7 @@
       <nav class="tabs" id="tabs">
         <button data-tab="overview" class="active">Overview</button>
         <button data-tab="explore">Explore</button>
-        <button data-tab="build">Build</button>
         <button data-tab="compare">Compare</button>
-        <button data-tab="reference">Reference</button>
       </nav>
       <div id="view"><div class="loader">Loading…</div></div>
     </div>
@@ -227,7 +225,8 @@ const STATE={
   config:null, vintages:[], byLabel:{}, active:null,
   filters:{}, // colName -> {role, selected:Set|null, min,max, query}
   tab:'overview',
-  explore:{sort:null, dir:1, page:0, pageSize:200, visible:null},
+  explore:{sort:null, dir:1, visible:null, searchCol:'', searchText:''},
+  ovExpand:new Set(),
   build:{row:null, col:'', measure:'count', field:'', chart:'bar', pctMode:'none'},
   compare:{dim:null},
 };
@@ -256,7 +255,7 @@ function classify(name, rows){
       role = (distinct.size>maxs || distinct.size> rows.length*0.95) ? 'id' : 'category';
     }
   }
-  const meta={name,role,label:ov.label||name,blanks,total:vals.length,
+  const meta={name,role,label:name,blanks,total:vals.length,
     isDerived:false, value_labels:ov.value_labels||null, order:ov.order||null,
     definition:ov.definition||'', distinct:distinct.size};
   if(role==='category'||role==='flag'){
@@ -288,7 +287,7 @@ function orderValues(meta,counts){
   if(counts.has(BLANK))ordered.push(BLANK);
   return ordered;
 }
-function dispVal(meta,v){ if(v===BLANK)return BLANK; if(meta.value_labels&&meta.value_labels[v]!=null)return meta.value_labels[v]; return v; }
+function dispVal(meta,v){ return v; } /* original values are never relabeled */
 
 /* derived columns */
 const SIC_DIV=[[1,999,'Agriculture, Forestry & Fishing'],[1000,1499,'Mining'],[1500,1799,'Construction'],
@@ -639,16 +638,23 @@ function renderOverview(host){
   for(const name of names){
     const m=STATE.active.meta[name]; const t=tally(fr,m);
     const card=el('div',{class:'sumcard'});
-    card.append(el('h3',{},m.label), el('div',{class:'sub'},`${m.role} · ${fmtInt(fr.length)} rows`));
+    card.append(el('h3',{},m.label), el('div',{class:'sub'},`${m.role} · ${fmtInt(m.distinct)} distinct · ${fmtInt(fr.length)} rows`));
     const bars=el('div',{class:'bars'});
-    const cols=palette(m.values.length);
-    m.values.forEach((v,i)=>{const c=t.get(v)||0;
+    const sorted=m.values.slice().sort((a,b)=>(t.get(b)||0)-(t.get(a)||0));
+    const expanded=STATE.ovExpand.has(name);
+    const show=expanded?sorted:sorted.slice(0,10);
+    const cols=palette(show.length);
+    show.forEach((v,i)=>{const c=t.get(v)||0;
       bars.append(el('div',{class:'barrow'},
         el('div',{class:'blabel',title:String(dispVal(m,v))},String(dispVal(m,v))),
         el('div',{class:'btrack'},el('div',{class:'bfill',style:`width:${fr.length?c/fr.length*100:0}%;background:${cols[i%cols.length]}`})),
         el('div',{class:'bval'},`${fmtInt(c)} · ${pct(c,fr.length)}`)));
     });
-    card.append(bars); cards.append(card);
+    card.append(bars);
+    if(sorted.length>10)card.append(el('button',{class:'linkbtn',style:'margin-top:6px',
+      onclick:()=>{if(expanded)STATE.ovExpand.delete(name);else STATE.ovExpand.add(name);renderOverview(host);}},
+      expanded?'show top 10':`show all ${sorted.length}`));
+    cards.append(card);
   }
   const p1=el('div',{class:'panel'});
   p1.append(el('h2',{},'Summary — live counts'),
@@ -682,56 +688,65 @@ function drillTo(name,dispLabel,m){
 /* ---------- Explore ---------- */
 function renderExplore(host){
   host.innerHTML='';
-  const cols=STATE.active.columns.filter(c=>STATE.active.meta[c].role!=='ignore');
-  if(!STATE.explore.visible)STATE.explore.visible=new Set(cols);
-  const vis=cols.filter(c=>STATE.explore.visible.has(c));
-  let rows=filteredRows();
-  // sort
   const s=STATE.explore;
-  if(s.sort){const m=STATE.active.meta[s.sort];const num=(m.role==='number');
-    rows=rows.slice().sort((a,b)=>{let x=a[s.sort],y=b[s.sort];
-      if(num){x=numparse(x);y=numparse(y);x=x==null?-Infinity:x;y=y==null?-Infinity:y;return (x-y)*s.dir;}
-      x=String(x);y=String(y);return x<y?-s.dir:x>y?s.dir:0;});}
-  const controls=el('div',{});
+  const cols=STATE.active.columns.filter(c=>STATE.active.meta[c].role!=='ignore');
+  if(!s.visible)s.visible=new Set(cols);
+  const vis=cols.filter(c=>s.visible.has(c));
+  // in-tab search: pick a column and search within it
+  const searchRow=el('div',{class:'controls'});
+  const colSel=el('select',{id:'x-searchcol',onchange:e=>{s.searchCol=e.target.value;refreshBody();}});
+  colSel.append(el('option',{value:'',...(s.searchCol===''?{selected:''}:{})},'(any column)'));
+  cols.forEach(c=>colSel.append(el('option',{value:c,...(c===s.searchCol?{selected:''}:{})},c)));
+  const searchInp=el('input',{id:'x-search',type:'search',placeholder:'search…',value:s.searchText,
+    oninput:e=>{s.searchText=e.target.value;refreshBody();}});
+  searchRow.append(
+    el('div',{class:'ctl'},el('label',{},'Search in'),colSel),
+    el('div',{class:'ctl'},el('label',{},'Contains'),searchInp),
+    el('div',{class:'ctl'},el('label',{html:'&nbsp;'}),el('button',{class:'btn',onclick:()=>{s.searchText='';refreshBody();}},'clear')));
+  host.append(searchRow);
   // column chooser
   const chooser=el('details',{},el('summary',{style:'cursor:pointer;color:var(--muted);font-weight:600;margin-bottom:6px'},`Columns (${vis.length}/${cols.length})`));
   const cp=el('div',{class:'colpick'});
-  cols.forEach(c=>{cp.append(el('label',{},
-    el('input',{type:'checkbox',...(STATE.explore.visible.has(c)?{checked:''}:{}),onchange:e=>{
-      if(e.target.checked)STATE.explore.visible.add(c);else STATE.explore.visible.delete(c);renderExplore(host);}}),
-    STATE.active.meta[c].label));});
-  chooser.append(cp); controls.append(chooser);
-  controls.append(el('div',{class:'btnrow'},
-    el('button',{id:'dl-filtered',class:'btn primary',onclick:()=>downloadFilteredCSV(vis,rows)},'⬇ Download filtered CSV'),
-    el('span',{class:'muted',style:'align-self:center'},`${fmtInt(rows.length)} rows × ${vis.length} cols`)));
-  host.append(controls);
-  // table (paginated)
-  const pageSize=s.pageSize, pages=Math.max(1,Math.ceil(rows.length/pageSize));
-  if(s.page>=pages)s.page=0;
-  const slice=rows.slice(s.page*pageSize,(s.page+1)*pageSize);
-  const wrap=el('div',{class:'tablewrap',style:'max-height:calc(100vh - 250px)'});
+  cols.forEach(c=>cp.append(el('label',{},
+    el('input',{type:'checkbox',...(s.visible.has(c)?{checked:''}:{}),onchange:e=>{
+      if(e.target.checked)s.visible.add(c);else s.visible.delete(c);renderExplore(host);}}), c)));
+  chooser.append(cp); host.append(chooser);
+  const countSpan=el('span',{class:'muted',style:'align-self:center'});
+  host.append(el('div',{class:'btnrow'},
+    el('button',{id:'dl-filtered',class:'btn primary',onclick:()=>downloadFilteredCSV(vis,computeRows())},'⬇ Download filtered CSV'),
+    countSpan));
+  // table
+  const wrap=el('div',{class:'tablewrap',style:'max-height:calc(100vh - 220px)'});
   const tbl=el('table',{class:'data'});
   const thead=el('tr',{});
-  vis.forEach(c=>{const m=STATE.active.meta[c];
-    const th=el('th',{title:m.label},m.label,s.sort===c?el('span',{class:'arr'},s.dir>0?' ▲':' ▼'):null);
+  vis.forEach(c=>{const th=el('th',{title:c},c,s.sort===c?el('span',{class:'arr'},s.dir>0?' ▲':' ▼'):null);
     th.addEventListener('click',()=>{if(s.sort===c)s.dir=-s.dir;else{s.sort=c;s.dir=1;}renderExplore(host);});
     thead.append(th);});
   tbl.append(el('thead',{},thead));
   const tb=el('tbody',{});
-  for(const r of slice){const tr=el('tr',{});
-    vis.forEach(c=>{const m=STATE.active.meta[c];const raw=r[c];
-      if(m.role==='url'&&!isBlank(raw)) tr.append(el('td',{},el('a',{href:raw,target:'_blank',rel:'noopener'},'link')));
-      else tr.append(el('td',{class:m.role==='number'?'num':''}, isBlank(raw)?'':String(raw)));
-    });
-    tb.append(tr);}
   tbl.append(tb); wrap.append(tbl); host.append(wrap);
-  // pager
-  const pager=el('div',{class:'pager'},
-    el('button',{onclick:()=>{if(s.page>0){s.page--;renderExplore(host);}}},'‹ Prev'),
-    el('span',{},`Page ${s.page+1} of ${pages}`),
-    el('button',{onclick:()=>{if(s.page<pages-1){s.page++;renderExplore(host);}}},'Next ›'),
-    el('span',{class:'muted'},`showing ${fmtInt(s.page*pageSize+1)}–${fmtInt(Math.min((s.page+1)*pageSize,rows.length))} of ${fmtInt(rows.length)}`));
-  host.append(pager);
+  function computeRows(){
+    let rows=filteredRows();
+    const q=(s.searchText||'').trim().toLowerCase();
+    if(q){const sc=s.searchCol;
+      rows=rows.filter(r=> sc ? String(r[sc]==null?'':r[sc]).toLowerCase().includes(q)
+                              : vis.some(c=>String(r[c]==null?'':r[c]).toLowerCase().includes(q)));}
+    if(s.sort){const m=STATE.active.meta[s.sort];const num=(m&&m.role==='number');
+      rows=rows.slice().sort((a,b)=>{let x=a[s.sort],y=b[s.sort];
+        if(num){x=numparse(x);y=numparse(y);x=x==null?-Infinity:x;y=y==null?-Infinity:y;return (x-y)*s.dir;}
+        x=String(x);y=String(y);return x<y?-s.dir:x>y?s.dir:0;});}
+    return rows;
+  }
+  function bodyHTML(rows){let h='';
+    for(const r of rows){h+='<tr>';
+      for(const c of vis){const m=STATE.active.meta[c];const raw=r[c];
+        if(m.role==='url'&&!isBlank(raw))h+='<td><a href="'+esc(raw)+'" target="_blank" rel="noopener">link</a></td>';
+        else h+='<td'+(m.role==='number'?' class="num"':'')+'>'+(isBlank(raw)?'':esc(raw))+'</td>';}
+      h+='</tr>';}
+    return h;}
+  function refreshBody(){const rows=computeRows();tb.innerHTML=bodyHTML(rows);
+    countSpan.textContent=`${fmtInt(rows.length)} rows × ${vis.length} cols`;}
+  refreshBody();
 }
 function downloadFilteredCSV(cols,rows){
   const lines=[cols.map(csvCell).join(',')];
@@ -869,16 +884,13 @@ function renderCompare(host){
   // table
   const tbl=el('table',{class:'xtab'}); const head=el('tr',{},el('th',{class:'rowhead'},refMeta?refMeta.label:c.dim));
   years.forEach(v=>head.append(el('th',{},v.label)));
-  head.append(el('th',{},'Δ '+years[years.length-1].label+' vs '+years[0].label));
   tbl.append(el('thead',{},head));
   const tb=el('tbody',{});
   valueOrder.forEach(val=>{const tr=el('tr',{},el('td',{class:'rowhead'},String(refMeta?dispVal(refMeta,val):val)));
-    const first=perYear[0].t.get(val)||0, last=perYear[perYear.length-1].t.get(val)||0;
     perYear.forEach(py=>{const cnt=py.t.get(val)||0;tr.append(el('td',{},`${fmtInt(cnt)}  ${pct(cnt,py.n)}`));});
-    const d=last-first; tr.append(el('td',{style:'color:'+(d>0?'var(--good)':d<0?'var(--warn)':'inherit')},(d>0?'+':'')+fmtInt(d)));
     tb.append(tr);});
   const trN=el('tr',{class:'totalrow'},el('td',{class:'rowhead'},'Total rows'));
-  perYear.forEach(py=>trN.append(el('td',{},fmtInt(py.n)))); trN.append(el('td',{},''));
+  perYear.forEach(py=>trN.append(el('td',{},fmtInt(py.n))));
   tb.append(trN); tbl.append(tb);
   const p=el('div',{class:'panel'}); p.append(el('h2',{},'Across years'+(anyFilter()?' (filtered)':'')),
     el('div',{class:'tablewrap',style:'display:inline-block;max-width:100%'},tbl),
