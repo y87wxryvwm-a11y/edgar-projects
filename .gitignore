@@ -24,6 +24,8 @@ registrant-dashboard/node_modules/
 registrant-dashboard/.verify/
 registrant-dashboard/package-lock.json
 registrant-dashboard/package.json
+# macOS-specific launcher — local only, never pushed (repo ships the Windows .bat)
+registrant-dashboard/*.command
 proxy/company_size_charts/
 proxy/topic_trends/
 
