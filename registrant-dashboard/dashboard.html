@@ -311,6 +311,18 @@ function applyDerived(vintage){
 
 /* ============================================================ load */
 async function boot(){
+  // Embedded prototype mode: data + config are baked into the page (no server, no fetch).
+  const cfgEl=document.getElementById('embedded-config');
+  if(cfgEl){
+    try{
+      STATE.config=JSON.parse(cfgEl.textContent);
+      const blocks=document.querySelectorAll('script[type="application/csv"]');
+      for(const b of blocks) addVintage(b.getAttribute('data-label'), b.textContent.replace(/^\s*\n/,''));
+      $('#genStamp').textContent='prototype · data baked in';
+      finishLoad();
+    }catch(e){ showDrop('Embedded data failed to load: '+e.message); }
+    return;
+  }
   try{
     const mf=await fetch('data/manifest.json',{cache:'no-store'});
     if(!mf.ok) throw new Error('no manifest');
