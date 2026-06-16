@@ -19,6 +19,11 @@ shares-outstanding/data/
 shares-outstanding-census/data/
 registrant-count/data/
 registrant-count/verify_workflow.js
+registrant-dashboard/data/
+registrant-dashboard/node_modules/
+registrant-dashboard/.verify/
+registrant-dashboard/package-lock.json
+registrant-dashboard/package.json
 proxy/company_size_charts/
 proxy/topic_trends/
 
