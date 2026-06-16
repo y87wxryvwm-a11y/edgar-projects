@@ -1,5 +1,46 @@
 # Progress log
 
+## 2026-06-16 (later) — one row per registrant CIK (explode + dedup)
+
+Evan: a filing with multiple CIKs should give each CIK its own row (same filing,
+but that CIK's own company-specific values — "especially true for utility
+companies"); and a CIK seen more than once should keep only its last non-amended
+annual report of the year.
+
+Diagnosis first: the repeated CIKs were NOT multi-CIK filings — they were one CIK
+filing several separate annual reports in 2025 (a delinquent filer's six back-year
+10-Ks; Graybar's common + voting-trust 10-Ks), all `multi=0`. The real gap was the
+opposite: combined filings kept only the primary filer, **dropping 261 co-
+registrant CIKs** (AEP's 7 subs, Entergy's 6, Southern's 5, airline op-cos, REIT
+OP LPs).
+
+Reworked the build to the **registrant grain**:
+- §2 emits **one record per FILER block** (each CIK's own SIC / business state /
+  state of incorporation / file-number / ABS), not just the primary.
+- §4b **dedups to one row per CIK** = its latest-filed (Filing Date, then
+  accession) report. 7,650 filings → 7,911 filer rows → **7,762 one per CIK**
+  (−149 superseded). No CIK appears twice.
+- Per-CIK State/State-Inc API fill: XBRL-validated for the primary only (the
+  combined filing's cover XBRL has no per-CIK state); co-registrant fills come
+  from each CIK's own submissions record.
+- Float drives afs/src only for the primary (a wholly-owned sub has no float of
+  its own — fixed a bug where subs inherited the parent's float → wrong AF/LAF).
+
+**Co-registrant statuses** (afs/src/egc/wksi/shell/reg): the combined cover lists
+each registrant's checkboxes (per-registrant block, or a matrix), but the XBRL
+tags them all under the parent CIK. Read the 199 combined covers with a tiered
+agent pipeline (Haiku read → Sonnet review → Opus adjudicates the ~106 with a
+disagreement; 517 agents), committed the adjudicated per-CIK values to
+`registrant_coregistrant_facts.py`. Confirms the per-CIK distinction the request
+was about — AEP parent LAF, its subs NAF; Federal Realty Trust LAF, its OP LP NAF;
+American Airlines Group LAF, American Airlines Inc NAF — each with its own state
+of incorporation and registration. NONE/NA reads fall to the per-CIK default.
+
+`2_verify` rewritten for the new grain (35/35): one row per CIK; CSV CIK set ==
+the universe of every filer CIK across all filings (independent line-state-machine
+header parser); each CIK's row is its latest filing; per-CIK SIC/State/Inc/BDC/
+ABS/multi re-derived; 100% filled; no manufactured impossible combo.
+
 ## 2026-06-16 — 100% fill of every status column (no blanks)
 
 Evan: every status column must be filled 100% — manual agent checks and logical

@@ -70,6 +70,10 @@ except ImportError:
 import registrant_lib as lib
 import registrant_fills as rfills
 from registrant_overrides import OVERRIDES
+try:
+    from registrant_coregistrant_facts import COREG_FACTS   # co-registrant cover reads
+except ImportError:
+    COREG_FACTS = {}
 
 COLUMNS = ["CIK", "Company Period", "Filing Date", "SIC", "State",
            "State Incorporated", "Accession Number",
@@ -102,32 +106,37 @@ for r in rows:
 items = sorted(by_accession.values(), key=lambda r: r["accession"])
 print("unique filings: %d" % len(items), flush=True)
 
-# --- 2. Header per filing -> primary filer fields (clean as-filed codes) -----
+# --- 2. Header per filing -> ONE record per filer CIK ------------------------
+# A combined annual report (utilities especially) lists several registrants in
+# one filing; each FILER block is its own company with its own CIK / SIC /
+# address / state of incorporation / file number. We emit a row per filer CIK
+# (each pointing back to the same filing), so every registrant appears, and the
+# company-specific columns carry that CIK's own values — not the parent's.
 
 recs = []
 for i, r in enumerate(items, 1):
     acc, txt = r["accession"], sorted(r["txt_paths"])[0]
     parsed = lib.parse_header(lib.fetch_sgml_header(session, cache_dirs, txt, acc))
-    filers = parsed["filers"]
-    if filers and filers[0]["cik"].isdigit():
-        p = filers[0]
-        cik = int(p["cik"])
-    else:
-        p = {"sic": "", "state_of_incorp": "", "business_state": "",
-             "mail_state": "", "file_number": ""}
-        cik = int(r["index_cik"].lstrip("0") or 0)
-    recs.append({
-        "cik": cik, "period": lib.fmt_date(parsed["period_of_report"]),
-        "filed": r["date_filed"], "sic": p["sic"], "acc": acc,
-        "form": r["form"], "txt": txt,
-        "n_filers": len(filers),
-        "file_numbers": [f.get("file_number", "") for f in filers],
-        "all_sics": [f.get("sic", "") for f in filers],
-        "h_state": p["business_state"].upper() or p["mail_state"].upper(),
-        "h_soi": p["state_of_incorp"].upper(),
-    })
+    filers = [f for f in parsed["filers"] if f.get("cik", "").isdigit()]
+    if not filers:   # header parse failed -> fall back to the index CIK, no filer detail
+        filers = [{"cik": r["index_cik"].lstrip("0") or "0", "sic": "",
+                   "state_of_incorp": "", "business_state": "", "mail_state": "",
+                   "file_number": ""}]
+    period = lib.fmt_date(parsed["period_of_report"])
+    for j, p in enumerate(filers):
+        recs.append({
+            "cik": int(p["cik"]), "period": period, "filed": r["date_filed"],
+            "sic": p.get("sic", ""), "acc": acc, "form": r["form"], "txt": txt,
+            "n_filers": len(filers), "is_primary": (j == 0),
+            "file_number": p.get("file_number", ""),
+            "h_state": p.get("business_state", "").upper() or p.get("mail_state", "").upper(),
+            "h_soi": p.get("state_of_incorp", "").upper(),
+        })
     if i % 1000 == 0 or i == len(items):
         print("[%d/%d] headers parsed" % (i, len(items)), flush=True)
+
+print("filer-CIK records (pre-dedup): %d across %d filings" % (len(recs), len(items)),
+      flush=True)
 
 # --- 3. Fill header-blank fields from EDGAR's record, validated by XBRL -------
 
@@ -153,10 +162,13 @@ if FILL_BLANKS_FROM_API:
             print("  [%d/%d]" % (i, len(need_api)), flush=True)
 
     name2code, codeset = lib.incorporation_name_to_code_map(cache_dirs)
-    # parse XBRL only for the filings that actually receive a fill (fast)
-    fills = [rec for rec in recs
-             if (not rec["h_state"] and api_state.get(rec["cik"]))
-             or (not rec["h_soi"] and api_soi.get(rec["cik"]))]
+    # The filing's inline-XBRL cover state is the PRIMARY registrant's (the
+    # default context), so it can only validate the primary filer's fill. A
+    # co-registrant's fill comes from its OWN submissions record, which is the
+    # authoritative per-CIK source, and is kept as-is.
+    fills = [rec for rec in recs if rec["is_primary"]
+             and ((not rec["h_state"] and api_state.get(rec["cik"]))
+                  or (not rec["h_soi"] and api_soi.get(rec["cik"])))]
     print("validating %d candidate fills against each filing's own XBRL..." % len(fills),
           flush=True)
     for i, rec in enumerate(fills, 1):
@@ -261,18 +273,37 @@ out, prov, fillrows = [], [], []
 state_src, soi_src, sec_src = Counter(), Counter(), Counter()
 afs_method, src_method = Counter(), Counter()
 for rec in recs:
-    c, a = rec["cik"], rec["acc"]
-    state, ssrc = resolve(rec["h_state"], api_state.get(c, ""), xbrl_state.get(a, ""))
-    soi, isrc = resolve(rec["h_soi"], api_soi.get(c, ""), xbrl_soi.get(a, ""))
+    c, a, primary = rec["cik"], rec["acc"], rec["is_primary"]
+    # XBRL state validates only the primary registrant's fill (the combined
+    # filing's cover XBRL has no per-CIK state); co-registrant fills come from
+    # their own submissions record.
+    x_state = xbrl_state.get(a, "") if primary else ""
+    x_soi = xbrl_soi.get(a, "") if primary else ""
+    state, ssrc = resolve(rec["h_state"], api_state.get(c, ""), x_state)
+    soi, isrc = resolve(rec["h_soi"], api_soi.get(c, ""), x_soi)
     state_src[ssrc] += 1
     soi_src[isrc] += 1
 
-    cv = cover.get(a, {})
-    is_abs = any(s == lib.ABS_SIC for s in rec["all_sics"])
-    ov = OVERRIDES.get(a)
+    # cover statuses: the primary registrant from the filing's cover facts /
+    # overrides; a co-registrant from its own line on the combined cover
+    # (registrant_coregistrant_facts, keyed by accession|CIK), else the per-CIK
+    # default. Overrides (single-filer cover reads) apply only to the primary.
+    if primary:
+        cv = cover.get(a, {})
+        ov = OVERRIDES.get(a)
+    else:
+        cv = dict(COREG_FACTS.get("%s|%d" % (a, c), {}))
+        ov = None
+        reg = cv.get("reg", "")
+        if reg in ("12b", "12g", "15d"):
+            cv["x12b"] = "1" if reg == "12b" else "0"
+            cv["x12g"] = "1" if reg == "12g" else "0"
+    is_abs = (rec["sic"] == lib.ABS_SIC)
+    # public float is the filing's (primary registrant's) — a co-registrant has
+    # no separate float, so it never drives a co-registrant's afs/src.
+    flt = float_by_acc.get(a) if primary else None
     raw_flags = {k: cv.get(k, "") for k in ("wksi", "shell", "src", "egc", "afs")}
-    vals, meth = rfills.resolve_flags(raw_flags, rec["form"], is_abs,
-                                      float_by_acc.get(a), ov)
+    vals, meth = rfills.resolve_flags(raw_flags, rec["form"], is_abs, flt, ov)
 
     has_12b = cv.get("x12b") == "1" or cv.get("s12b") == "1"
     has_12g = cv.get("x12g") == "1" or cv.get("s12g") == "1"
@@ -286,7 +317,7 @@ for rec in recs:
         "CIK": c, "Company Period": rec["period"], "Filing Date": rec["filed"],
         "SIC": rec["sic"], "State": state, "State Incorporated": soi,
         "Accession Number": a,
-        "BDC": "1" if any(fn.strip().startswith("814") for fn in rec["file_numbers"]) else "0",
+        "BDC": "1" if rec["file_number"].strip().startswith("814") else "0",
         "ABS": "1" if is_abs else "0",
         "multi": "1" if rec["n_filers"] > 1 else "0",
         "text_url": lib.SEC_BASE + "/Archives/" + rec["txt"],
@@ -297,14 +328,14 @@ for rec in recs:
         "sec_12b": sec_12b, "sec_12g": sec_12g, "sec_15d": sec_15d,
     })
     prov.append({
-        "Accession Number": a, "CIK": c,
+        "Accession Number": a, "CIK": c, "is_primary": "1" if primary else "0",
         "State": state, "state_source": ssrc, "header_state": rec["h_state"],
-        "api_state": api_state.get(c, ""), "xbrl_state": xbrl_state_raw.get(a, ""),
+        "api_state": api_state.get(c, ""), "xbrl_state": xbrl_state_raw.get(a, "") if primary else "",
         "State Incorporated": soi, "soi_source": isrc, "header_soi": rec["h_soi"],
-        "api_soi": api_soi.get(c, ""), "xbrl_soi": xbrl_soi_raw.get(a, ""),
+        "api_soi": api_soi.get(c, ""), "xbrl_soi": xbrl_soi_raw.get(a, "") if primary else "",
     })
     fillrows.append({
-        "Accession Number": a,
+        "Accession Number": a, "CIK": c, "is_primary": "1" if primary else "0",
         "wksi": vals["wksi"], "wksi_method": meth["wksi"],
         "shell": vals["shell"], "shell_method": meth["shell"],
         "afs": vals["afs"], "afs_method": meth["afs"],
@@ -315,15 +346,36 @@ for rec in recs:
         "public_float": ("%.0f" % float_by_acc[a]) if a in float_by_acc else "",
     })
 
+# --- 4b. One row per CIK: keep each registrant's LAST non-amended annual report
+# of the calendar year (latest Filing Date; ties broken by the later accession).
+# A company that filed several annual reports in the year (e.g. a delinquent
+# filer catching up on back years, periods 2000-2005) collapses to its most
+# recent; a registrant that appears on a combined filing AND files its own report
+# keeps whichever was filed later. Accession is no longer the row key — CIK is.
+
+best = {}
+for idx, row in enumerate(out):
+    key = (row["Filing Date"], row["Accession Number"])
+    cur = best.get(row["CIK"])
+    if cur is None or key > cur[0]:
+        best[row["CIK"]] = (key, idx)
+keep = sorted(i for _, i in best.values())
+n_dropped = len(out) - len(keep)
+out = [out[i] for i in keep]
+prov = [prov[i] for i in keep]
+fillrows = [fillrows[i] for i in keep]
+print("deduped to one row per CIK: %d rows (dropped %d earlier/superseded filings)"
+      % (len(out), n_dropped), flush=True)
+
 # --- 5. Write + summary ------------------------------------------------------
 
 fills_path = os.path.join(directory, out_filename.replace(".csv", "_fills.csv"))
 df = pd.DataFrame(out, columns=COLUMNS) \
-    .sort_values("Accession Number").reset_index(drop=True)
+    .sort_values("CIK").reset_index(drop=True)
 df.to_csv(out_path, index=False, encoding="utf-8", lineterminator="\n")
-pd.DataFrame(prov).sort_values("Accession Number").to_csv(
+pd.DataFrame(prov).sort_values(["CIK"]).to_csv(
     prov_path, index=False, encoding="utf-8", lineterminator="\n")
-pd.DataFrame(fillrows).sort_values("Accession Number").to_csv(
+pd.DataFrame(fillrows).sort_values(["CIK"]).to_csv(
     fills_path, index=False, encoding="utf-8", lineterminator="\n")
 print("\nwrote %s (%d rows)" % (out_path, len(df)))
 print("wrote %s" % prov_path)

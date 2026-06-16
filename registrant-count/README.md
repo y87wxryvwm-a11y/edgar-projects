@@ -1,21 +1,23 @@
 # registrant-count
 
-A flat, one-row-per-filing register of every 2025 annual filing, built to the
+A flat register of every 2025 SEC annual-report **registrant**, built from the
 same population as the [shares-outstanding census](../shares-outstanding-census/)
-and re-runnable annually.
+and re-runnable annually. **One row per registrant CIK** — each company appears
+once, represented by its last non-amended annual report of the year, and every
+column holds that CIK's own value (see [One row per CIK](#one-row-per-cik)).
 
 | Column | Source |
 |---|---|
-| CIK | SGML header, primary (first) FILER block |
+| CIK | the registrant's own FILER block in the SGML header |
 | Company Period | header CONFORMED PERIOD OF REPORT, as ISO `YYYY-MM-DD` |
 | Filing Date | EDGAR quarterly index, ISO `YYYY-MM-DD` |
-| SIC | header STANDARD INDUSTRIAL CLASSIFICATION (primary filer) |
-| State | header BUSINESS ADDRESS state (→ mail → EDGAR record); EDGAR code |
-| State Incorporated | header STATE OF INCORPORATION (→ EDGAR record); EDGAR code |
-| Accession Number | the filing's accession (`NNNNNNNNNN-NN-NNNNNN`) |
-| BDC | `1` if any filer's SEC FILE NUMBER starts `814-` (a business development company) |
-| ABS | `1` if SIC is 6189 (asset-backed securities) |
-| multi | `1` if the filing has more than one FILER block (multiple CIKs) |
+| SIC | this CIK's STANDARD INDUSTRIAL CLASSIFICATION |
+| State | this CIK's BUSINESS ADDRESS state (→ mail → EDGAR record); EDGAR code |
+| State Incorporated | this CIK's STATE OF INCORPORATION (→ EDGAR record); EDGAR code |
+| Accession Number | the report this CIK is on (`NNNNNNNNNN-NN-NNNNNN`) |
+| BDC | `1` if this CIK's SEC FILE NUMBER starts `814-` (a business development company) |
+| ABS | `1` if this CIK's SIC is 6189 (asset-backed securities) |
+| multi | `1` if the report carries more than one registrant (combined filing) |
 | text_url | URL of the full-submission raw `.txt` |
 | filing_url | URL of the filing's EDGAR index page |
 | wksi | `dei:EntityWellKnownSeasonedIssuer` checkbox (`1`/`0`) |
@@ -47,7 +49,16 @@ Large Accelerated Filer stays `LAF` even where its float makes that unusual; the
 mostly) are reported exactly as filed. We never *manufacture* an impossible
 status: a heuristic/default fill is barred from pairing `afs=LAF` with `src=1`
 (verified). Findings from the manual cover reads are committed as code
-(`registrant_overrides.py`), so a from-scratch rebuild reproduces them exactly.
+(`registrant_overrides.py`, `registrant_coregistrant_facts.py`), so a from-
+scratch rebuild reproduces them exactly.
+
+**Co-registrant statuses** come from the combined cover itself. A combined
+filing's inline XBRL tags every registrant's cover facts under the *parent's*
+CIK, so a subsidiary's own status can't be read from the XBRL — it's read from
+the cover text, which lists each registrant's checkboxes (a per-registrant block,
+or a matrix). The 199 combined covers were read by independent agents (a small
+model reads, a larger one reviews, the largest adjudicates disagreements) and the
+adjudicated per-CIK values committed to `registrant_coregistrant_facts.py`.
 
 **The cover checkboxes** (wksi, shell, afs, src, egc) are read from the filing's
 inline-XBRL `dei` cover facts — the tag IS the printed checkbox. The boolean is
@@ -73,13 +84,36 @@ default to §15(d) (their asset-backed 10-Ks carry no §12 securities).
 
 ## Population
 
-Identical to the census: every filing whose form type is **exactly** `10-K`,
-`20-F`, or `40-F` in the year's four EDGAR quarterly indexes — filed-in-year,
-not fiscal-year — deduped by accession, no `/A` amendments. **2025: 7,650
-filings** (6,431 10-K, 1,077 20-F, 142 40-F). ABS issuers (header SIC 6189, 825
-filings) are annual filers and are **included**; filter `SIC == 6189` to drop
-them. The accession set is re-derived here independently and matches the census
-`population_2025.csv` row-for-row.
+The filings are the census's: every report whose form type is **exactly**
+`10-K`, `20-F`, or `40-F` in the year's four EDGAR quarterly indexes — filed-in-
+year, not fiscal-year, no `/A` amendments. **2025: 7,650 filings** (6,431 10-K,
+1,077 20-F, 142 40-F). ABS issuers (SIC 6189) are included; filter `SIC == 6189`
+to drop them.
+
+## One row per CIK
+
+The unit of this dataset is the **registrant**, not the filing. Two adjustments
+turn the 7,650 filings into **7,762 registrant rows**:
+
+* **Combined filings are exploded.** A single annual report often covers several
+  registrants — a utility holding company and its operating subsidiaries (AEP =
+  8 CIKs, Entergy = 7, Southern = 6), an airline holding company and its airline,
+  a REIT and its operating partnership. Each FILER block is its own company with
+  its own CIK, SIC, address, state of incorporation, file number and **its own
+  cover statuses** (AEP is a Large Accelerated Filer; its subsidiaries are Non-
+  accelerated). We emit a row per filer CIK — so every registrant appears, +261
+  co-registrants that a primary-filer-only register drops — each pointing back to
+  the same filing (`text_url` / `filing_url` / accession) but carrying that CIK's
+  own values.
+* **Each CIK is then deduped to its last report of the year.** A company that
+  filed several annual reports in the calendar year (a delinquent filer catching
+  up on back years; a registrant that appears on a combined filing *and* files
+  its own report) collapses to its latest-filed, non-amended one — so a CIK never
+  appears twice. (−149 superseded filings.)
+
+Net: 7,650 filings → 7,911 filer rows → **7,762 one per distinct CIK** (verified:
+the CIK set equals the universe of every filer CIK across all 7,650 filings, and
+each CIK's row is its latest filing).
 
 ## The two location fields
 
@@ -87,13 +121,14 @@ Both are EDGAR State-or-Country codes (`CA`, `DE`, `M0`=Japan, `A6`=Ontario,
 `E9`=Cayman, `F4`=China …), upper-cased — a couple of filers key them lowercase
 (`wa`/`ct`).
 
-* **State** is the registrant's business-address state from the SGML header (the
-  primary filer), falling back to its mail-address state. As-filed.
-* **State Incorporated** is the header's STATE OF INCORPORATION. The header omits
-  that line for ~15% of filings; where it does, the value is filled from
-  **EDGAR's own authoritative company record** (the submissions API, same code
-  space) — but a fill is **kept only when the filing's own as-filed inline-XBRL
-  doesn't contradict it**. The header is trustworthy (wherever it states a value
+* **State** is the registrant's business-address state from its own FILER block,
+  falling back to its mail-address state. As-filed.
+* **State Incorporated** is that CIK's STATE OF INCORPORATION from its FILER block.
+  The header omits that line for some filings; where it does, the value is filled
+  from **EDGAR's own authoritative company record** for that CIK (the submissions
+  API, same code space) — but a fill is **kept only when the filing's own as-filed
+  inline-XBRL doesn't contradict it** (validated for the primary registrant; a
+  co-registrant's fill comes straight from its own submissions record). The header is trustworthy (wherever it states a value
   it agrees with EDGAR's record 98.8% of the time), but EDGAR's record can be
   stale or conflated where the header is silent — a reincorporation, or a foreign
   filer whose location is mistagged as its incorporation. The filing's own XBRL
@@ -129,8 +164,8 @@ from EDGAR (throttled, cached) on first run. Dependencies: `requests`, `pandas`
 
 | Script | What it does |
 |---|---|
-| `1_build_registrant_count.py` | Quarterly indexes → population; SGML header → CIK/period/date/SIC/state/accession + BDC/ABS/multi/URLs; fills header-blank State / State Incorporated from EDGAR's record (XBRL-validated); parses each cached document's inline-XBRL `dei` cover facts + scrapes the §12(b)/(g) blocks for the cover flags. Writes the CSV + provenance + a `cover_facts_<year>.csv` cache. **First run parses ~6,825 documents (one-time, ~20 min); re-runs read the cache and finish in seconds.** |
-| `2_verify_registrant_count.py` | Deterministic suite: completeness re-derived from the raw indexes + matched to the census; an independent second header parser reproduces every header value; API-filled values re-checked against the cached record; BDC/multi re-derived from the headers; registration flags mutually exclusive; format. Raises if any check fails. |
+| `1_build_registrant_count.py` | Quarterly indexes → population; SGML header → **one record per filer CIK** with that CIK's SIC/state/incorporation/file-number; fills header-blank State / State Incorporated from EDGAR's record (XBRL-validated for the primary); inline-XBRL `dei` cover facts + §12 scrape for the primary, committed cover reads for co-registrants; resolves every status flag (`registrant_fills`); **dedups to one row per CIK (latest report)**. Writes the CSV + `_provenance` + `_fills` sidecars + a `cover_facts_<year>.csv` cache. **First run parses ~6,825 documents (one-time, ~20 min); re-runs finish in seconds.** |
+| `2_verify_registrant_count.py` | Deterministic suite (35 checks): one row per CIK; the CSV CIK set equals the universe of every filer CIK across all filings (independent header parser); each CIK's row is its latest-filed report; per-CIK SIC/State/Incorporation/BDC/ABS/multi re-derived from that CIK's own filer block; status flags 100% filled, registration mutually exclusive, no fill manufactures an impossible LAF+SRC; format. Raises if any check fails. |
 | `3_crosscheck_api.py` | Cross-checks the **header-sourced** values against EDGAR's authoritative record (independent — those rows didn't use it). |
 | `4_crosscheck_xbrl.py` | Cross-checks against the filing's **own as-filed inline-XBRL** `dei` state tags (no current-vs-filed drift). Informational — reports agreement and itemizes the XBRL's noise. |
 
@@ -138,19 +173,22 @@ from EDGAR (throttled, cached) on first run. Dependencies: `requests`, `pandas`
 location fields, cached-doc XBRL extraction, the cover-checkbox / §12 facts, and
 submissions fetch). `registrant_fills.py` is the deterministic 100%-fill resolver
 (as-filed > agent-read > definitional > size-heuristic > default, with the
-impossible-combo guard); `registrant_overrides.py` holds the committed cover-read
-findings. All fetches are throttled (~6 req/s) and cached, so interrupted runs
-resume and finished runs re-run offline.
+impossible-combo guard); `registrant_overrides.py` and
+`registrant_coregistrant_facts.py` hold the committed cover-read findings (single
+filers, and per-CIK statuses for combined filings). All fetches are throttled
+(~6 req/s) and cached, so interrupted runs resume and finished runs re-run offline.
 
 ## How the values are trusted
 
-* **Completeness** — the accession set is re-derived straight from the four
-  cached master indexes and equals both the CSV and the census population
-  (7,650; 0 missing, 0 extra, 0 duplicates, no amendments).
-* **Shared columns** — CIK / SIC / Company Period / Filing Date / Accession match
-  the census population row-for-row.
-* **Header extraction** — a second, independently written parser (a line
-  state-machine, vs. the build's section-regex) reproduces every header value.
+* **Coverage (one row per CIK)** — an independent header parser re-derives every
+  filer CIK from all 7,650 filings; the CSV's CIK set equals that universe exactly
+  (0 missing, 0 extra), each CIK appears once, and each CIK's row is verified to
+  be its latest-filed report of the year. Every accession is a real 2025 annual
+  filing; no amendments.
+* **Per-CIK fields** — a second, independently written parser (a line state-
+  machine over every FILER block, vs. the build's section-regex) re-derives each
+  CIK's own SIC / State / State of Incorporation / file-number(BDC) / SIC-6189(ABS)
+  and the filing's filer count (multi), and must match every row.
 * **State fields** — header-sourced values agree with EDGAR's authoritative
   record 96.8% (State) / 98.8% (State Incorporated), the few differences being
   as-filed-vs-current drift and redomiciliations. Every record-sourced fill is
