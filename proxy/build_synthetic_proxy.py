@@ -1,7 +1,7 @@
 """Build a synthetic proxy-proposal dataset whose distributional summary
 reproduces every cell in proxy/dataset_shape.csv.
 
-Output: synthetic_proxy.csv in the directory below (8,461 rows x 13 columns).
+Output: synthetic_proxy.csv in the directory below (8,461 rows x 14 columns).
 """
 
 import os
@@ -111,6 +111,50 @@ def build_proponent_type():
     values = np.array(parts, dtype=object)
     rng.shuffle(values)
     return values
+
+
+def build_proponent_entity_id():
+    """Synthetic 'Proponent Entity ID': the entity behind each proposal.
+
+    Drawn so the 10 most active proponents account for the large majority of all
+    proposals -- the real concentration, where a handful of repeat activist
+    filers dominate submissions. Assigned independently of every other column
+    (no cross-variable structure), matching the rest of this generator.
+
+    Construction: 10 'big' proponents on a steep descending profile take ~65% of
+    the N proposals; the remaining ~35% spread across a 200-proponent long tail
+    whose largest member (capped well under the smallest big-10 count) is dwarfed
+    by every big-10 proponent. That wide gap holds inside any year window too, so
+    the 'top 10' set is unambiguous however the rows are sliced.
+    """
+    big_counts = np.array([1050, 900, 760, 640, 540, 450, 360, 300, 250, 210])
+    big_ids = np.arange(100001, 100001 + len(big_counts), dtype=np.int64)
+
+    n_tail = 200
+    tail_ids = np.arange(200001, 200001 + n_tail, dtype=np.int64)
+    tail_total = N - int(big_counts.sum())          # 3001 proposals over the tail
+    # Descending ramp, every proponent >= 1, largest tail count kept far below the
+    # smallest big-10 count; nudged to hit the exact tail total.
+    tail_counts = np.maximum(1, np.round(np.linspace(29, 1, n_tail))).astype(np.int64)
+    i = 0
+    while int(tail_counts.sum()) != tail_total:
+        idx = i % n_tail
+        if int(tail_counts.sum()) < tail_total:
+            tail_counts[idx] += 1
+        elif tail_counts[idx] > 1:
+            tail_counts[idx] -= 1
+        i += 1
+    assert tail_counts.max() < big_counts.min()
+
+    ids = np.concatenate([big_ids, tail_ids])
+    counts = np.concatenate([big_counts, tail_counts])
+    assert int(counts.sum()) == N
+    values = np.repeat(ids, counts)
+    # Shuffle with a dedicated RNG (not the shared `rng`) so adding this column
+    # leaves the random stream of every other column untouched -- the existing
+    # 13 columns reproduce byte-for-byte, so the table/chart builders are unmoved.
+    np.random.default_rng(seed + 1000).shuffle(values)
+    return values.astype(np.int64)
 
 
 def build_proxy_category():
@@ -264,6 +308,7 @@ columns = {
     "Factset Industry Desc": build_factset_industry(),
     "Index Mtg SP50": build_binary(6331),
     "Proponent Type Code": build_proponent_type(),
+    "Proponent Entity ID": build_proponent_entity_id(),
     "Proxy Category": build_proxy_category(),
     "mynoaction_granted": build_binary(1450),
     "mynoaction_sought": build_binary(2927),

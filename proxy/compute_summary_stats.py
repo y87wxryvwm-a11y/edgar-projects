@@ -42,6 +42,22 @@ def pct(x, total):
     return round(100 * x / total, 2) if total else float("nan")
 
 
+def top10_proponent_count(sub):
+    """Proposals filed by the 10 most active proponents within `sub`.
+
+    'Top 10' = the 10 Proponent Entity IDs with the most proposals in this
+    window; ties broken by smaller ID so the set is deterministic. Returns the
+    number of proposals belonging to those 10 entities.
+    """
+    counts = sub["Proponent Entity ID"].value_counts()
+    order = (
+        pd.DataFrame({"entity_id": counts.index, "count": counts.values})
+        .sort_values(["count", "entity_id"], ascending=[False, True])
+    )
+    top10_ids = order["entity_id"].head(10)
+    return int(sub["Proponent Entity ID"].isin(top10_ids).sum())
+
+
 def stat_rows(sub):
     """Return [(base_label, description, value), ...] in numeric concept order.
 
@@ -76,6 +92,7 @@ def stat_rows(sub):
     granted_not_voted = int(
         ((sub["mynoaction_granted"] == 1) & (sub["myproposal_result"] != "1voted")).sum()
     )
+    top10_proponents = top10_proponent_count(sub)
 
     return [
         ("1.1", "Total count of proposals", n),
@@ -107,6 +124,8 @@ def stat_rows(sub):
         ("15.2", "Stat 15.1 as % of stat 14.1 (no-action granted as % of sought)", pct(granted, sought)),
         ("16.1", "Count where mynoaction_granted == 1 and myproposal_result != 1voted", granted_not_voted),
         ("16.2", "Stat 16.1 as % of stat 15.1", pct(granted_not_voted, granted)),
+        ("17.1", "Proposals from the top 10 proponents (by Proponent Entity ID)", top10_proponents),
+        ("17.2", "Top 10 proponents, as % of total (stat 1.1)", pct(top10_proponents, n)),
     ]
 
 

@@ -74,6 +74,14 @@ def independent(sub):
         .iloc[0, 0]
     )
 
+    # Concept 17: proposals from the 10 busiest proponents in this window.
+    # Recomputed via groupby().size() + sort_index tie-break (count desc, ID asc)
+    # instead of compute's value_counts path.
+    ent_counts = sub.groupby("Proponent Entity ID").size()
+    ent_ranked = ent_counts.sort_index().sort_values(kind="stable", ascending=False)
+    top10_ids = set(ent_ranked.head(10).index)
+    top10_proponents = int(sub["Proponent Entity ID"].isin(top10_ids).sum())
+
     return {
         "1.1": n,
         "2.1": voted, "2.2": pct(voted, n),
@@ -91,6 +99,7 @@ def independent(sub):
         "14.1": sought, "14.2": pct(sought, n),
         "15.1": granted, "15.2": pct(granted, sought),
         "16.1": granted_not_voted, "16.2": pct(granted_not_voted, granted),
+        "17.1": top10_proponents, "17.2": pct(top10_proponents, n),
     }
 
 
