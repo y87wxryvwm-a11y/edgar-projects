@@ -1,5 +1,53 @@
 # Progress log
 
+## 2026-07-02 — combined registrant-level dataset (ROADMAP goal 1) built
+
+The shares and float censuses merged into one published relational pair
+(`15_build_combined.py`, `combined_overrides.py`), joined by (accession, cik).
+Deterministic assembly over the finished censuses — no new extraction.
+
+Outputs: `registrants_2025.csv` (7,911 rows, one per registrant-CIK per filing:
+6,978 IN_SCOPE + 933 EXCLUDED_ABS; 7,650 primary + 261 co-filers, each carrying
+its OWN CIK/name/SIC — a subsidiary never wears the parent's identity),
+`share_classes_2025.csv` (8,414 rows + 26 per-class floats), and a nested JSONL.
+Stata/R-safe (flat), primary key (accession, cik), byte-identical rebuilds.
+
+Decisions (Evan): (A) `shares_total` summed only within one share type — mixed
+common+preferred → empty + DISCLOSED_MIXED_TYPES; (B) the 170 NO_FLOAT_STATED
+filings are cover-stated no-float (None/zero/N-A/no-public-market), NOT missed
+extractions — the audit trail's "STATED_ON_COVER" framing was a mischaracterization
+caught by reading the covers; they get `float_status FLOAT_STATED_NONE` + a
+`float_status_detail` reason, classified from the cover field and confirmed by a
+48-cover adversarial read (0 hidden positive floats); (C) per-class float joins
+by class_designator, attached only when a designator maps to exactly one float
+class (the JLL "Class M" vs "Class M-I" collision stays empty).
+
+Names for 176 co-filer pairs (91 CIKs) with no row-level name resolved from the
+cached SGML FILER headers (Entergy operating cos, AEP Transmission, Tanger LP …),
+100% coverage. 68 co-filer names, 170-filing cover classification, and the read
+verdicts are committed (`combined_overrides.py`) so a from-scratch rebuild
+reproduces them.
+
+Verification: exhaustive independent reconciliation over all 7,911 rows
+(universe, share sums, float values/aggregation, names, mutual exclusivity,
+status justification) — all green; byte-identical rebuild; 10-agent stratified
+audit against the actual filings + a schema/publishability critic. The audit
+found and drove fixes for: a fractional-shares drop (Union Carbide 935.51 →
+DISCLOSED_FRACTIONAL, was silently lost), the empty `float_status` on value rows
+(now DISCLOSED), the `FLOAT_STATED_NONE:reason` colon (split into
+`float_status_detail`), plus `fiscal_year` and shares min/max as-of dates; and
+one **upstream** float defect — JLL Income Property Trust (0001314152-25-000031),
+a non-traded REIT whose NAV-based cover float is stated in thousands
+($1,173,740 = $1.174B at 100.3M sh × $11.71 NAV) but was recorded ×1000 too
+small. Corrected in `float_overrides.py` (all five classes ×1000, total ~$2.603B,
+`SCALE_THOUSANDS_CORRECTED`), following the existing scale-fix precedent; a NAV
+cross-check sweep confirmed it is the only such non-traded-fund case. Float
+census and combined dataset rebuilt byte-identical; `14_check_float.py` green.
+
+Queued follow-up: `TAGGED_ZERO_COVER_SILENT` (338 rows) can misname covers that
+affirmatively state "no public market" (e.g. 0000038009-25-000007) — a
+cover-language sweep would split genuine-silence from affirmative-no-market.
+
 ## 2026-06-12 — registrant identity, consolidated float, plausibility smoke test
 
 Evan's eye-test review of the float dataset surfaced four issues; all fixed
@@ -43,7 +91,7 @@ Audits this round: 9 haiku readers re-read every zero row's cover (99 at
 audit time; the attribution fixes split two more, giving 101); 16 sonnet
 auditors re-checked every multi-registrant filing's CIK attribution
 (95 filings, 292 rows); a fresh-eyes sonnet pass re-verified every fix;
-1 Opus delta audit (8th of the ≤10 budget). float_status byte-identical to
+1 Opus delta audit. float_status byte-identical to
 the pre-rework snapshot (the extractor changes were value-neutral);
 coverage dispositions changed only for the corrected filings (→
 ROWS_FROM_OVERRIDE); row CSVs rebuild byte-identical across runs.
@@ -151,8 +199,8 @@ no ambiguous class labels, 1 genuinely undatable row).
 The ladder as run: ~5 extractor iteration rounds against full-population
 XBRL signal (86% → 91.2% filing-level validation, every rule general);
 tier-2: 2×745 + 649 blind haiku reads; tier-3: 414 + 68 sonnet adjudications
-of every conflict, 110 blind sonnet verifications; Opus (6 of the ≤10
-budget): 3-agent panel on XBRL-contradicted rulings, 1 flag-resolution
+of every conflict, 110 blind sonnet verifications; Opus: 3-agent panel on XBRL-contradicted
+rulings, 1 flag-resolution
 agent, 1 full audit, 1 delta audit. Both audits spot-checked rows against
 the filings; all counts matched; their label/date findings (market-value-
 date grabs, equal-count class collapses, label swaps) were fixed via general
@@ -185,7 +233,7 @@ each attributed to the previous class's label. Two root causes, both fixed:
    The override-prune rule also no longer drops label-disambiguating entries.
 
 Re-ruled after the rework: 23 residual filings + 14 label collisions (sonnet,
-folded into overrides). Closing Opus pairing audit (7th of the ≤10 budget):
+folded into overrides). Closing Opus pairing audit:
 **30/30 multi-class filings PASS, 85/85 rows correctly paired** — including
 PLDT, Liberty Media's tracking-stock matrix, KKR's nine classes, AEP's seven
 registrants. Final: 8,412 rows / 6,771 filings / 0 unresolved /

@@ -122,6 +122,28 @@ population filings accounted for; 95.3% of rows validated by the filer's own
 XBRL (exact or per-class aggregation), the rest by independent multi-model
 reads or audited overrides; byte-identical across rebuilds.
 
+## The combined registrant-level dataset (`15_build_combined.py`)
+
+The shares and float censuses merge into one published pair joined by
+`(accession, cik)` — the successor deliverable both censuses were built to feed
+(ROADMAP goal 1). One deterministic assembly script over the finished outputs,
+no new extraction:
+
+| Output | What it is |
+|---|---|
+| `registrants_{year}.csv` | One row per `(accession, cik)`: identity (own CIK + conformed name, `is_primary_filer`, `sic`, `form`, `date_filed`, `fiscal_year`), `status` (IN_SCOPE / EXCLUDED_ABS), a shares summary (`n_share_classes`, `shares_total`, `shares_status`, min/max as-of dates) and a float summary (`public_float`, `float_basis`, `float_status` + `float_status_detail`, `public_float_date`). Every registrant is kept — ABS issuers and no-measure co-filers carry explicit statuses, nothing vanishes. |
+| `share_classes_{year}.csv` | One row per share class (the shares census) plus `per_class_public_float` where the cover breaks the value out by class. |
+| `registrants_{year}.jsonl` | The same, classes nested per registrant, for Python users (the flat tables stay the source). |
+
+Stata/R-safe (flat, no nested cells); primary key `(accession, cik)`; rebuilds
+byte-identical. `shares_total` is summed only within one share type (mixed
+types → empty + `DISCLOSED_MIXED_TYPES`); `float_status` is always populated
+(`DISCLOSED` when a value is present). **2025:** 7,911 registrant rows (933 ABS
++ 261 co-filers), 8,414 class rows; every population filing accounted for. Built
+and independently audited 2026-07-02 (see `progress.md`); the audit also caught
+and fixed one upstream float scale error (JLL Income Property Trust, corrected
+×1000 in `float_overrides.py`).
+
 `census_lib.py` is the shared engine; `cover_extractor.py` is the documented
 extraction methodology (every rule a general property of how filings are
 written — never a fix for one particular filing). All fetches are throttled

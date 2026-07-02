@@ -1,9 +1,15 @@
 # Roadmap
 
-Two committed future goals, design settled in advance so today's code keeps
-pointing at them. Neither is built yet.
+Two committed goals, design settled in advance so today's code keeps pointing
+at them. Goal 1 is **built** (`15_build_combined.py`, 2026-07-02); goal 2 (the
+unthrottled runner) is not yet built.
 
-## 1. The combined registrant-level dataset
+## 1. The combined registrant-level dataset — BUILT (2026-07-02)
+
+Built by `15_build_combined.py`; see `README.md` and the 2026-07-02 progress
+entry. The design below is what shipped, with three columns added during the
+build's audit (`fiscal_year`, `shares_min_date`/`shares_max_date`,
+`float_status_detail`) and `float_status` always populated.
 
 The shares and float censuses merge into one published dataset whose **base
 row is a unique registrant — anything with its own CIK inside an annual
