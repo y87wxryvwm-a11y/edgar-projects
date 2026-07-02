@@ -44,9 +44,16 @@ small. Corrected in `float_overrides.py` (all five classes ×1000, total ~$2.603
 cross-check sweep confirmed it is the only such non-traded-fund case. Float
 census and combined dataset rebuilt byte-identical; `14_check_float.py` green.
 
-Queued follow-up: `TAGGED_ZERO_COVER_SILENT` (338 rows) can misname covers that
-affirmatively state "no public market" (e.g. 0000038009-25-000007) — a
-cover-language sweep would split genuine-silence from affirmative-no-market.
+TAGGED_ZERO sweep (same day, Evan-requested, cheapest-that-works): batch-read all
+320 `TAGGED_ZERO_COVER_SILENT` covers (haiku, 16 batches of ~20). 49 affirmatively
+state no market / none / zero and were reclassified to FLOAT_STATED_NONE (combined
+float_status: 5,092 DISCLOSED, 1,221 NOT_REQUIRED_FORM, 933 EXCLUDED_ABS, 287
+TAGGED_ZERO_COVER_SILENT, 229 FLOAT_STATED_NONE, 107 CO_FILER_NO_FLOAT, 42
+NOT_DISCLOSED). The same sweep caught 2 covers stating a POSITIVE float the filer
+XBRL-tagged zero — AEI Income & Growth Fund XXII LP ($11,749,372) and Fund 25 LLC
+($36,986,364) — now corrected as disclosed values in `float_overrides.py`
+(public_float census 5,134 → 5,136 rows). Float census + combined rebuilt
+byte-identical; `14_check_float.py` green; exhaustive reconciliation green.
 
 ## 2026-06-12 — registrant identity, consolidated float, plausibility smoke test
 
