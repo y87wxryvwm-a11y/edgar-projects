@@ -2,7 +2,8 @@
 *.csv
 *.xlsx
 
-# Claude project instructions — local only
+# Project instructions — local only
+AGENTS.md
 CLAUDE.md
 
 # Python cache
