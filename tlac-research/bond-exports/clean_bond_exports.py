@@ -172,7 +172,7 @@ def main():
             summary = dict(source_file=name, status="error", error=str(exc))
             print(f"{name}: ERROR — {exc}")
         else:
-            save_csv(kept, os.path.join(destination, names[name]))
+            save_csv(kept.drop(columns=META), os.path.join(destination, names[name]))
             summary["output_file"] = names[name]
             retained_total += len(kept)
             excluded_frames.append(excluded)

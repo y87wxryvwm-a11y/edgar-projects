@@ -33,9 +33,8 @@ Outputs in `DATA_DIR/bond_exports_cleaned` are replaced on each run:
   trailing underscore removed if present). Headers from Excel row 4 become the
   first CSV row; bond data start immediately below. Naming collisions stop the
   run before writing, so one input cannot overwrite another company's output.
-  `source_file` and `source_excel_row` trace each row to its export.
-  `export_isin` is a trimmed, uppercase copy of column J; the original remains.
-  `count_matches_total` identifies rows from files whose counts matched.
+  Company CSVs contain only the original exported columns. The four helper
+  columns are used internally for validation and omitted from these files.
 - `validation_summary.csv`: expected and retained counts, their difference,
   excluded nonempty rows, missing ISINs, and duplicate ISIN counts per file.
   `duplicate_isin_rows` counts all rows sharing an ISIN; `duplicate_isin_excess_rows`
