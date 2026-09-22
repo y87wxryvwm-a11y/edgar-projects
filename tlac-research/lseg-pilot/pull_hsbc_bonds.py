@@ -105,7 +105,7 @@ def search_interval(lower=None, upper=None, missing=False):
             frame = ld.discovery.search(
                 view=ld.discovery.Views.GOV_CORP_INSTRUMENTS,
                 query=company_search, filter=expression, top=PAGE_SIZE, skip=skip,
-                order_by="IssueDate asc,MainSuperRIC asc", select=SELECT,
+                order_by="IssueDate asc", select=SELECT,
             )
             if frame is None:
                 raise RuntimeError("Search returned None; not treating this as an empty page.")
