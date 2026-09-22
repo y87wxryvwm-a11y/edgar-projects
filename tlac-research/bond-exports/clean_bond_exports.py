@@ -69,18 +69,18 @@ def parse_total(value):
 def clean_file(path):
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
-        if "bonds" not in workbook.sheetnames:
-            raise ValueError("Sheet 'bonds' was not found.")
-        sheet = workbook["bonds"]
+        if "Bonds" not in workbook.sheetnames:
+            raise ValueError("Sheet 'Bonds' was not found.")
+        sheet = workbook["Bonds"]
         # Ignore potentially inflated worksheet dimensions from export software.
         sheet.reset_dimensions()
         rows = [(number, tuple(values)) for number, values in
                 enumerate(sheet.iter_rows(values_only=True), 1)
-                if number >= 5 and any(populated(v) for v in values)]
+                if number >= 4 and any(populated(v) for v in values)]
     finally:
         workbook.close()
-    if len(rows) < 2 or rows[0][0] != 5:
-        raise ValueError("Expected headers in row 5 and a final total row below them.")
+    if len(rows) < 2 or rows[0][0] != 4:
+        raise ValueError("Expected headers in row 4 and a final total row below them.")
     total_row, total_values = rows[-1]
     if len(total_values) < 2:
         raise ValueError("The final populated row has no value in column B.")
@@ -133,6 +133,16 @@ def save_csv(frame, path):
     os.replace(temporary, path)
 
 
+def output_name(filename):
+    stem = os.path.splitext(filename)[0]
+    prefix = re.split(r"[0-9]", stem, maxsplit=1)[0].rstrip()
+    if prefix.endswith("_"):
+        prefix = prefix[:-1]
+    if not prefix or prefix in (".", ".."):
+        raise ValueError(f"Cannot derive a company output name from {filename!r}.")
+    return prefix + ".csv"
+
+
 def main():
     source = os.path.join(directory, input_folder)
     destination = os.path.join(directory, output_folder)
@@ -145,8 +155,16 @@ def main():
                    if name.lower().endswith((".xlsx", ".xlsm")) and not name.startswith("~$"))
     if not files:
         raise RuntimeError(f"No .xlsx or .xlsm files found in {source}.")
+    names = {name: output_name(name) for name in files}
+    seen = {"validation_summary.csv", "rows_excluded.csv"}
+    for name, output in names.items():
+        if output.casefold() in seen:
+            raise ValueError(f"Output filename collision: {name!r} maps to {output!r}. "
+                             "Rename the input files so each company prefix is unique.")
+        seen.add(output.casefold())
     os.makedirs(destination, exist_ok=True)
-    kept_frames, excluded_frames, summaries = [], [], []
+    excluded_frames, summaries = [], []
+    retained_total = 0
     for name in files:
         try:
             kept, excluded, summary = clean_file(os.path.join(source, name))
@@ -154,15 +172,15 @@ def main():
             summary = dict(source_file=name, status="error", error=str(exc))
             print(f"{name}: ERROR — {exc}")
         else:
-            kept_frames.append(kept)
+            save_csv(kept, os.path.join(destination, names[name]))
+            summary["output_file"] = names[name]
+            retained_total += len(kept)
             excluded_frames.append(excluded)
             print(f"{name}: expected {summary['expected_total']:,}; "
                   f"retained {summary['retained_rows']:,}; "
                   f"difference {summary['difference']:+,}")
         summaries.append(summary)
-    combined = pd.concat(kept_frames, ignore_index=True) if kept_frames else pd.DataFrame(columns=META)
     excluded = pd.concat(excluded_frames, ignore_index=True) if excluded_frames else pd.DataFrame(columns=META + ["exclusion_reason"])
-    save_csv(combined, os.path.join(destination, "bonds_cleaned.csv"))
     save_csv(excluded, os.path.join(destination, "rows_excluded.csv"))
     save_csv(pd.DataFrame(summaries), os.path.join(destination, "validation_summary.csv"))
     print(f"Outputs saved to {destination}")
@@ -170,9 +188,9 @@ def main():
     if failures:
         raise RuntimeError(
             f"{failures} file(s) failed validation. Inspect validation_summary.csv and "
-            "rows_excluded.csv before using the combined data."
+            "rows_excluded.csv before using the company files."
         )
-    print(f"All {len(files)} file totals match. Retained {len(combined):,} rows; no deduplication.")
+    print(f"All {len(files)} file totals match. Retained {retained_total:,} rows; no deduplication.")
 
 
 if __name__ == "__main__":

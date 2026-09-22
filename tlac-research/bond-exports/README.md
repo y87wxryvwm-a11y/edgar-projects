@@ -11,8 +11,8 @@ This script reads local files and makes no LSEG API requests.
    or `.xlsb` files as `.xlsx` first. Excel temporary files are ignored.
 3. Run the script. The two folder names at the top can be changed if needed.
 
-The script reads only the `bonds` sheet. Row 5 supplies the column names; rows
-1–4 are ignored. It captures the expected count from column B of the last
+The script reads only the `Bonds` sheet. Row 4 supplies the column names; rows
+1–3 are ignored. Row 5 is the first data row. It captures the expected count from column B of the last
 populated row, excluding that summary row from the data. Trailing empty rows
 are ignored. A total must be a nonnegative integer; comma separators are allowed.
 Formulas must have cached results saved by Excel.
@@ -26,7 +26,13 @@ CSV by pandas; original text dates remain text.
 
 Outputs in `DATA_DIR/bond_exports_cleaned` are replaced on each run:
 
-- `bonds_cleaned.csv`: all retained rows, including any count-mismatch files.
+- One company CSV per readable input file, including files with count mismatches.
+  The filename keeps everything before the first digit in the input stem, then
+  removes one trailing underscore. For example, `HSBC_Holdings_20260922.xlsx`
+  becomes `HSBC_Holdings.csv`. Without digits, the full stem is kept (with a
+  trailing underscore removed if present). Headers from Excel row 4 become the
+  first CSV row; bond data start immediately below. Naming collisions stop the
+  run before writing, so one input cannot overwrite another company's output.
   `source_file` and `source_excel_row` trace each row to its export.
   `export_isin` is a trimmed, uppercase copy of column J; the original remains.
   `count_matches_total` identifies rows from files whose counts matched.
@@ -40,8 +46,12 @@ Outputs in `DATA_DIR/bond_exports_cleaned` are replaced on each run:
 
 A count mismatch or unreadable file produces an error after saving the reports.
 Unreadable files contribute no bond rows; inspect the summary before using the
-combined file. Matching the count verifies this cleaning rule against the export,
+company files. Matching the count verifies this cleaning rule against the export,
 not that Workspace's original company universe or TLAC classification is correct.
-Files with different headers are combined using the union of their columns.
+Each company output preserves its own exported columns.
 No bonds are deduplicated, including bonds present in more than one company file.
-Input workbooks are never modified.
+Input workbooks are never modified. Existing company outputs are replaced when
+that input is successfully read; a failed input does not refresh its old output.
+Check the current validation summary to identify failures. The old combined
+`bonds_cleaned.csv` from earlier script versions is no longer produced or updated;
+use the individually named company files instead.
