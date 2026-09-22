@@ -1,0 +1,47 @@
+# Clean Workspace bond exports
+
+Run `clean_bond_exports.py` in Spyder. Requires `pandas` and `openpyxl`.
+This script reads local files and makes no LSEG API requests.
+
+1. Copy `config.example.py` to `config.py` in this script's folder. Set `DATA_DIR`
+   to your machine's data directory. The config is not committed.
+2. Create a `bond_exports` folder inside that data directory. Place one Workspace
+   company export per file there, with descriptive filenames (for example,
+   `HSBC.xlsx`). Supported formats are `.xlsx` and `.xlsm`; resave older `.xls`
+   or `.xlsb` files as `.xlsx` first. Excel temporary files are ignored.
+3. Run the script. The two folder names at the top can be changed if needed.
+
+The script reads only the `bonds` sheet. Row 5 supplies the column names; rows
+1–4 are ignored. It captures the expected count from column B of the last
+populated row, excluding that summary row from the data. Trailing empty rows
+are ignored. A total must be a nonnegative integer; comma separators are allowed.
+Formulas must have cached results saved by Excel.
+
+Rows below the headers are retained when column C is an Excel date, an English
+text date in `06-Mar-2027` format, or `Perpetual` (case and surrounding spaces
+ignored). Completely blank rows are skipped. Other nonempty rows are saved for
+inspection. Column J supplies the ISIN. All original columns are preserved;
+blank or repeated headers receive unique names. Typed dates are serialized to
+CSV by pandas; original text dates remain text.
+
+Outputs in `DATA_DIR/bond_exports_cleaned` are replaced on each run:
+
+- `bonds_cleaned.csv`: all retained rows, including any count-mismatch files.
+  `source_file` and `source_excel_row` trace each row to its export.
+  `export_isin` is a trimmed, uppercase copy of column J; the original remains.
+  `count_matches_total` identifies rows from files whose counts matched.
+- `validation_summary.csv`: expected and retained counts, their difference,
+  excluded nonempty rows, missing ISINs, and duplicate ISIN counts per file.
+  `duplicate_isin_rows` counts all rows sharing an ISIN; `duplicate_isin_excess_rows`
+  counts only occurrences after the first. Duplicates are not deleted. Missing
+  or duplicate identifiers do not by themselves cause a count failure.
+- `rows_excluded.csv`: rejected nonempty rows with their original location and
+  exclusion reason. Header rows and the final total row are not included.
+
+A count mismatch or unreadable file produces an error after saving the reports.
+Unreadable files contribute no bond rows; inspect the summary before using the
+combined file. Matching the count verifies this cleaning rule against the export,
+not that Workspace's original company universe or TLAC classification is correct.
+Files with different headers are combined using the union of their columns.
+No bonds are deduplicated, including bonds present in more than one company file.
+Input workbooks are never modified.
