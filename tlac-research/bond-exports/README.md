@@ -1,5 +1,39 @@
 # Clean Workspace bond exports
 
+## Add TLAC eligibility to a cleaned company file
+
+After cleaning, run `add_tlac_eligibility.py` in Spyder on the machine running
+Workspace. Requires `pandas` and `lseg-data`; it uses the existing default
+`ld.open_session()` connection. No bond search is performed.
+
+Set `input_filename` at the top (default `HSBC_Holdings.csv`). The file is read
+from `DATA_DIR/bond_exports_cleaned`. Set `isin_column` and `issuer_column` only
+if the export uses different header names; matching ignores case and surrounding
+spaces. The script uses this folder's existing `config.py`.
+
+It requests `TR.IsTLACEligible` in batches of 100 distinct nonblank ISINs, then
+matches results by identifier and preserves all input rows and original columns.
+Output files in `DATA_DIR/bond_exports_tlac` are:
+
+- `<company>_tlac.csv`: enriched original rows, adding `tlac_lookup_isin`,
+  `tlac_eligible`, `tlac_lookup_status`, and `tlac_pulled_at_utc`.
+- `<company>_tlac_issuers.csv`: issuer names with Y flags, with row counts and
+  distinct ISIN counts. Names come from the export, not a new issuer lookup.
+
+The console prints input rows, missing ISINs, distinct ISINs requested, duplicate
+excess rows, progress, Y/N/null counts, and the eligible issuer table. `null`
+means LSEG returned the identifier but a blank flag; `no_response` means it did
+not return that requested identifier; `missing_isin` means the input had no ISIN.
+Neither null nor missing responses are treated as N. The timestamp records the
+request run, not the effective date of LSEG's classification.
+
+Request failures, unexpected flags, duplicate response identifiers, and missing
+response columns stop the run without replacing outputs. Previously saved output
+files may therefore remain after a failed run; use only files from a successful
+run and check the timestamp. Input CSVs are never overwritten.
+
+## Clean the exports
+
 Run `clean_bond_exports.py` in Spyder. Requires `pandas` and `openpyxl`.
 This script reads local files and makes no LSEG API requests.
 
