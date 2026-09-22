@@ -20,3 +20,11 @@ compared with the 14,154 screen count yet. Inspect the issuer names in the outpu
 The previous full pull returned zero bonds in the user's live environment. This
 smaller replacement has been syntax/API-interface checked locally; a live result
 still needs to be confirmed on the Workspace machine.
+
+## Expanded column comparison
+
+The user confirmed that this ten-result test works. Next run
+`pull_bond_details.py` for a 100-result sample with the Excel columns in order,
+plus TLAC flags. See [BOND_COLUMNS.md](BOND_COLUMNS.md) for field mappings and the
+one unresolved legacy-seniority field. This expanded sample does not replace or
+modify the working ten-result script.
