@@ -32,7 +32,10 @@ modify the working ten-result script.
 ## HSBC batched pull
 
 Run `pull_hsbc_bonds.py` in Spyder with Workspace signed in, using the same local
-`config.py`. It searches for HSBC without activity or TLAC filters. It exhausts
+`config.py`. It searches for HSBC with `IsActive eq true`, excluding matured (`MAT`)
+and cancelled (`DC`) records, without a TLAC filter. Subsidiaries remain in scope;
+the pull is not restricted to HSBC Holdings plc alone. The Workspace comparison
+target supplied by the user is approximately 31,000 active group bonds. It exhausts
 the name search, not a verified corporate-group universe; compare the result
 with Workspace and HSBC's public instrument disclosures before claiming group
 completeness. In particular, affiliated issuers need not have HSBC in their names.
@@ -56,7 +59,7 @@ completeness. In particular, affiliated issuers need not have HSBC in their name
   batches. Completed batches survive a failure or budget stop. Run again after
   resolving an error, or after requests age out of the local budget (up to 24h).
 
-Outputs beneath `DATA_DIR/hsbc_bonds_2026_09_22`:
+Outputs beneath `DATA_DIR/hsbc_active_bonds_2026_09_22`:
 
 - `search_*.csv`: saved search pages (including parent partitions later split).
 - `bond_search_identifiers.csv`: combined final search partitions.
@@ -75,3 +78,8 @@ and [usage monitoring](https://developers.lseg.com/en/article-catalog/article/ch
 Published service limits are not a guarantee of this account's available quota.
 The pull has been checked locally with simulated responses; a live run requires
 the user's Workspace machine.
+
+The active pull uses a new folder so archived results from the earlier unfiltered
+run cannot be reused. Keep the usage ledger: previous requests still consumed
+allowance. Issue-date splitting is only pagination, not a request for inactive
+bonds; every interval and the undated partition receive the active filter.

@@ -2,7 +2,7 @@
 
 # ---- EDIT THIS --------------------------------------------------------------
 company_search = "HSBC"
-run_folder = "hsbc_bonds_2026_09_22"  # Keep to resume; change for a fresh snapshot.
+run_folder = "hsbc_active_bonds_2026_09_22"  # Keep to resume; change for a fresh snapshot.
 batch_size = 100
 # -----------------------------------------------------------------------------
 
@@ -48,6 +48,7 @@ COLUMNS = {
 }
 FIELDS = list(COLUMNS.values())
 SELECT = "ISIN,MainSuperRIC,AssetStatusDescription,IssuerCommonName,IssueDate"
+ACTIVE_FILTER = "IsActive eq true and not(AssetStatus in ('MAT' 'DC'))"
 PAGE_SIZE = 500
 PAUSE_SECONDS = 4
 # Local estimated usage across this script's runs in DATA_DIR, rolling 24 hours.
@@ -94,6 +95,7 @@ def search_interval(lower=None, upper=None, missing=False):
         if upper is not None:
             clauses.append(f"IssueDate lt {upper.isoformat()}")
         expression = " and ".join(clauses) or "IssueDate ne null"
+    expression = f"{ACTIVE_FILTER} and ({expression})"
     pages = []
     for skip in range(0, 10000, PAGE_SIZE):
         key = hashlib.sha256(f"{expression}|{skip}".encode()).hexdigest()[:20]
@@ -137,7 +139,8 @@ def main():
     if not isinstance(batch_size, int) or not 1 <= batch_size <= 100:
         raise ValueError("batch_size must be between 1 and 100.")
     settings = {"query": company_search, "fields": FIELDS, "batch_size": batch_size,
-                "select": SELECT, "page_size": PAGE_SIZE, "version": 1}
+                "select": SELECT, "page_size": PAGE_SIZE,
+                "active_filter": ACTIVE_FILTER, "version": 2}
     manifest = os.path.join(root, "settings.json")
     if os.path.exists(manifest) and json.load(open(manifest, encoding="utf-8")) != settings:
         raise RuntimeError("Settings changed. Use a new run_folder to avoid mixing cached data.")
@@ -148,7 +151,7 @@ def main():
         if os.path.exists(universe_path):
             results = pd.read_csv(universe_path, dtype=str, keep_default_na=False)
         else:
-            # Broad date buckets include old, future and undated issues. No status filter.
+            # Date buckets paginate ACTIVE instruments; old issue dates are allowed.
             results = pd.concat([
                 search_interval(upper=date(1970, 1, 1)),
                 search_interval(date(1970, 1, 1), date(2030, 1, 1)),
@@ -168,6 +171,7 @@ def main():
         if not identifiers:
             raise RuntimeError("Search returned no usable identifiers.")
         print(f"Search rows: {len(results):,}; distinct lookup identifiers: {len(identifiers):,}.")
+        print("Workspace comparison target: approximately 31,000 active HSBC group bonds.")
         print(f"Details: {len(FIELDS)} fields, up to {batch_size} bonds per batch. Cached batches are reused.")
         batches = []
         for start in range(0, len(identifiers), batch_size):
