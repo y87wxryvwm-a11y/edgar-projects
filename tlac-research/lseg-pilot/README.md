@@ -28,3 +28,50 @@ The user confirmed that this ten-result test works. Next run
 plus TLAC flags. See [BOND_COLUMNS.md](BOND_COLUMNS.md) for field mappings and the
 one unresolved legacy-seniority field. This expanded sample does not replace or
 modify the working ten-result script.
+
+## HSBC batched pull
+
+Run `pull_hsbc_bonds.py` in Spyder with Workspace signed in, using the same local
+`config.py`. It searches for HSBC without activity or TLAC filters. It exhausts
+the name search, not a verified corporate-group universe; compare the result
+with Workspace and HSBC's public instrument disclosures before claiming group
+completeness. In particular, affiliated issuers need not have HSBC in their names.
+
+- Search pages: 500 rows, saved individually. Date intervals split when they
+  reach the 10,000-result search window; undated records are included separately.
+- Detail batches: 100 unique identifiers and the 20 reference fields already
+  agreed, with a four-second pause before each network request.
+- Local rolling-24-hour budget: 500 attempted calls or 300,000 estimated cells,
+  whichever comes first, including search. The ledger is shared across this
+  script's run folders under DATA_DIR. Requests are reserved before sending,
+  including failed attempts. This is a conservative local estimate, not the
+  account's remaining quota: other scripts, Excel, SDK-internal requests and
+  other account usage are not measured. Run only one copy of this script at once.
+- Keep `run_folder` unchanged to resume. Saved successful pages/batches are
+  reused. Change it for a fresh snapshot; changing fields or batch size requires
+  a new folder. A run resumed on another day contains observations from multiple
+  dates; per-request JSON files record retrieval times.
+- Exceptions stop the script without automatic retries. Incomplete detail
+  responses are saved as `.received.csv` for inspection, not accepted as completed
+  batches. Completed batches survive a failure or budget stop. Run again after
+  resolving an error, or after requests age out of the local budget (up to 24h).
+
+Outputs beneath `DATA_DIR/hsbc_bonds_2026_09_22`:
+
+- `search_*.csv`: saved search pages (including parent partitions later split).
+- `bond_search_identifiers.csv`: combined final search partitions.
+- `search_rows_without_identifier.csv`: records that cannot be queried by ISIN/RIC.
+- `details_*.csv`: successful detail batches, each with a retrieval-time JSON file.
+- `hsbc_bond_details.csv`: combined final data, one row per distinct lookup ID.
+- `issuer_tlac_counts.csv`: Y/N/null counts by issuer.
+
+ISIN is preferred, with RIC as fallback. Raw search rows are retained so identifier
+duplication can be reviewed. Null TLAC values remain null, never N. No totals are
+summed across currencies. Final combined detail output is written only after all
+batches finish. The public-disclosure reconciliation is the next step.
+
+LSEG sources: [usage guidelines](https://developers.lseg.com/en/api-catalog/lseg-data-platform/lseg-data-library-for-python/documentation)
+and [usage monitoring](https://developers.lseg.com/en/article-catalog/article/check-lseg-data-library-for-python-usage-limits-remaining).
+Published service limits are not a guarantee of this account's available quota.
+The pull has been checked locally with simulated responses; a live run requires
+the user's Workspace machine.
