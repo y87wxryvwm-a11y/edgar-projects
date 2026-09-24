@@ -16,7 +16,7 @@ matches results by identifier and preserves all input rows and original columns.
 Output files in `DATA_DIR/bond_exports_tlac` are:
 
 - `<company>_tlac.csv`: enriched original rows, adding `tlac_lookup_isin`,
-  `tlac_eligible`, `tlac_lookup_status`, and `tlac_pulled_at_utc`.
+  `tlac_eligible`, `tlac_lookup_status`, `tlac_pulled_at_utc`, and `tlac_error`.
 - `<company>_tlac_issuers.csv`: issuer names with Y flags, with row counts and
   distinct ISIN counts. Names come from the export, not a new issuer lookup.
 
@@ -27,10 +27,24 @@ not return that requested identifier; `missing_isin` means the input had no ISIN
 Neither null nor missing responses are treated as N. The timestamp records the
 request run, not the effective date of LSEG's classification.
 
-Request failures, unexpected flags, duplicate response identifiers, and missing
-response columns stop the run without replacing outputs. Previously saved output
-files may therefore remain after a failed run; use only files from a successful
-run and check the timestamp. Input CSVs are never overwritten.
+Each completed request is saved to `<company>_tlac_checkpoint.csv`. With
+`resume = True` (the default), reruns reuse saved Y/N/null responses for matching
+ISINs and retry request errors and missing responses. Set `resume = False` when
+you want fresh current classifications for every bond. Resumed results retain
+individual retrieval timestamps, so a resumed file can contain multiple dates.
+
+A failed request is retried once after two seconds. A persistent error containing
+HTTP code 400 is split into smaller requests until individual failing ISINs are
+isolated. These rows have blank eligibility, status `request_error`, and the
+exception text in `tlac_error`. They are also saved to `<company>_tlac_errors.csv`.
+The console warns that results are incomplete if request errors remain. An error
+at an individual ISIN does not prove the identifier is invalid or ineligible.
+
+Other persistent request failures and unexpected response formats stop the run,
+leaving completed requests in the checkpoint. Final output files from an earlier
+run may remain; only a successful completion refreshes them. The previous script
+version saved only at the end, so its failed runs have no on-disk checkpoint to
+resume. Input CSVs are never overwritten.
 
 ## Clean the exports
 
