@@ -1,5 +1,67 @@
 # Clean Workspace bond exports
 
+## Compare with HSBC's published instrument list
+
+Run `compare_hsbc_disclosure.py` in Spyder. Requires `pandas` and `openpyxl`;
+no Workspace session or LSEG API requests are needed. It uses this folder's
+existing `config.py` and reads `DATA_DIR/bond_exports_tlac/HSBC_Holdings_tlac.csv`
+by default. Change `input_filename` if necessary. Column defaults match the
+enrichment script: `ISIN`, `Issuer`, and `tlac_eligible`.
+
+Set `disclosure_date` to `2025-12-31` (default) or `2026-06-30` to match the
+HSBC Main Features document being investigated. The script downloads and caches
+the corresponding official workbook automatically. This is simply the structured
+version of HSBC's PDF; no Excel application or manual spreadsheet work is needed.
+
+Validated extractions from the official workbooks:
+
+| HSBC section | December 2025 | June 2026 |
+| --- | ---: | ---: |
+| AT1 counting toward MREL | 14 | 16 |
+| Tier 2 counting toward MREL | 31 | 31 |
+| Other eligible liabilities counting toward MREL | 85 | 91 |
+| Tier 2 explicitly not counting toward MREL | 6 | 6 |
+| Ordinary shares | 3 | 2 |
+| Total distinct ISINs | 139 | 146 |
+
+These are disclosure-list counts, not comparison results. The script retains
+HSBC's exact section headings rather than assuming everything in the workbook
+is TLAC eligible. Ordinary shares stay separate because the LSEG input is a bond
+universe. It validates ISIN checksums, removes superscript footnote markers, and
+retains source sheet/cell, issuer, type, original issue/maturity text and amounts.
+It extracts the numbered identifier row, not identifiers mentioned in hyperlinks.
+
+Outputs under `DATA_DIR/hsbc_disclosure_comparison/<disclosure_date>`:
+
+- `hsbc_reference_isins.csv`: the extracted list with source URL and category.
+- `reference_comparison.csv`: one row per HSBC ISIN, showing Y, N, null,
+  request error, no response, conflicting duplicate flags, or absent from CSV.
+- `lseg_annotated.csv`: every original CSV row and column, with HSBC reference
+  information added where an ISIN matches.
+- `hsbc_absent_from_csv.csv`: published identifiers missing from the CSV.
+- `hsbc_present_without_y.csv`: published identifiers found without a consistent Y.
+- `lseg_y_not_in_disclosure.csv`: original Y rows absent from this disclosure.
+- `summary_by_category.csv`, `summary_by_issuer.csv`, and
+  `summary_by_isin_prefix.csv`: counts for investigating patterns.
+- `summary.txt`: console results saved to a file, including retrieval timestamps
+  when supplied by the enrichment script.
+
+Matching trims whitespace and ignores case. Input duplicates are preserved in
+the annotated file; the reference comparison counts distinct ISINs. Conflicting
+flags on duplicate rows are reported, never silently reduced to Y. Issuer-summary
+counts can overlap when an ISIN has inconsistent issuer names or flags.
+
+Differences between reporting dates can reflect new issuance, calls, repayments,
+or changes in eligibility. Absence from a dated disclosure does not establish
+ineligibility. A blank flag or failed request is not N. ISIN prefixes do not
+identify investor residence. The comparison does not sum amounts or equate MREL
+with TLAC. Outputs are replaced on successful reruns; the input CSV is untouched.
+
+Extraction was checked against both official workbooks and every extracted ISIN
+passed its checksum. Comparison logic was tested with controlled examples covering
+case/whitespace, duplicates, conflicting flags, N, request errors, missing matches,
+and an empty input. Actual overlap results require the user's local LSEG CSV.
+
 ## Add TLAC eligibility to a cleaned company file
 
 After cleaning, run `add_tlac_eligibility.py` in Spyder on the machine running
